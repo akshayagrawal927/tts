@@ -3381,11 +3381,13 @@ def display_chat_message(message_data, is_user=True, message_index=0):
         response_text = message_data.get('response', message_data.get('content', ''))
         
         # Display bot response inside the styled box
+        formatted_response = response_text.replace('**', '<strong>').replace('**', '</strong>').replace('\n', '<br>')
+        # Display bot response inside the styled box
         st.markdown(f"""
         <div class="bot-message">
             <div class="bot-label"> DataBot</div>
             <div style="margin-top: 10px; line-height: 1.6;">
-                {response_text.replace('**', '<strong>').replace('**', '</strong>').replace('\n', '<br>')}
+                {formatted_response}
             </div>
         </div>
         """, unsafe_allow_html=True)
