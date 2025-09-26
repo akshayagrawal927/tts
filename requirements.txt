@@ -1,0 +1,30 @@
+# FastAPI Backend
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+
+# Streamlit Frontend
+streamlit
+
+# Database & Data Processing
+pyodbc
+pandas
+numpy
+python-dotenv
+# AI & LangChain
+langchain-openai
+langchain-core
+langgraph
+
+# Visualization
+matplotlib
+Pillow
+
+# Environment & Logging
+python-dotenv
+python-multipart
+
+# HTTP Client for Frontend-Backend Communication
+httpx
+requests
