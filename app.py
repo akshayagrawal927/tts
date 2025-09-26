@@ -71,11 +71,7 @@ def setup_logging():
 
 # Initialize logging
 logger = setup_logging()
-# from dotenv import load_dotenv
 import os
-
-# Load variables from .env
-# load_dotenv()
 # Azure OpenAI Configuration
 AZURE_OPENAI_CONFIG = {
     'endpoint': "https://openai-cocacola-new.openai.azure.com/",
@@ -89,7 +85,7 @@ AZURE_OPENAI_CONFIG = {
 SYNAPSE_CONFIG = {
     'server': 'cocacola-synapse-new-ondemand.sql.azuresynapse.net',
     'database': 'sap_demo',
-    'driver': 'ODBC Driver 17 for SQL Server',
+    'driver': 'ODBC Driver 18 for SQL Server',
     'client_id': '4e02feac-1741-4460-88c4-d3a8aa5b9f10',
     'client_secret': os.getenv("AZURE_AD_SECRET"),
     'tenant_id': '638456b8-8343-4e48-9ebe-4f5cf9a1997d',
@@ -484,82 +480,58 @@ Bronze	5-10 Orders per month
 
 class FuzzySearch:
     """A system for performing fuzzy matching on product and customer names."""
-    def __init__(self, products: List[str], customers: List[str], threshold: float = 0.55):
+    def __init__(self, products: List[str], customers: List[str], threshold: float = 0.35):
         self.products = products
         self.customers = customers
         self.threshold = threshold
         logger.info(f"FuzzySearch initialized with {len(products)} products and {len(customers)} customers.")
 
     def _similarity_ratio(self, s1: str, s2: str) -> float:
-        """Calculate similarity ratio using SequenceMatcher and prefix matching."""
+        """
+        Calculate a hybrid similarity score, prioritizing exact, substring, and prefix 
+        matches while still handling spelling errors.
+        """
         s1, s2 = s1.lower(), s2.lower()
-        
-        # Perfect match
+
+        # 1. Perfect Match (Score: 1.0)
         if s1 == s2:
             return 1.0
-            
-        # Calculate standard similarity
+
+        # 2. Baseline Spelling Similarity using SequenceMatcher
         base_similarity = SequenceMatcher(None, s1, s2).ratio()
-        
-        # Check if s1 is a prefix of s2 (handles incomplete words)
-        if s2.startswith(s1):
-            # Adjust score based on how much of the target word is matched
-            prefix_score = len(s1) / len(s2)
-            # Weight prefix matches higher than general similarity
-            return max(base_similarity, 0.7 + (0.3 * prefix_score))
-            
-        # Split into words for partial word matching
+
+        # 3. Substring Match Score (for ambiguity like "Coke Light")
+        substring_score = 0.0
+        if s1 in s2:
+            # Give a very high score, adjusted by how much of the target is matched
+            substring_score = 0.9 + (0.1 * (len(s1) / len(s2)))
+
+        # 4. Prefix Match Score (for incomplete words like "Fanta Straw")
+        prefix_score = 0.0
         words1 = s1.split()
         words2 = s2.split()
-        
-        # Check if each word in query is a prefix of any word in target
-        if len(words1) > 0 and len(words2) > 0:
-            word_matches = []
-            for w1 in words1:
-                best_word_match = max(
-                    (len(w1) / len(w2) if w2.startswith(w1) else 0)
-                    for w2 in words2
-                )
-                word_matches.append(best_word_match)
-            if all(score > 0 for score in word_matches):
-                prefix_score = sum(word_matches) / len(word_matches)
-                return max(base_similarity, 0.7 + (0.3 * prefix_score))
-        
-        return base_similarity
+        if words1 and words2 and all(any(w2.startswith(w1) for w2 in words2) for w1 in words1):
+            # Also give a high score, but slightly less than a full substring match
+            prefix_score = 0.8 + (0.15 * (len(s1) / len(s2)))
+            
+        # Return the highest score from all checks
+        return max(base_similarity, substring_score, prefix_score)
 
     def find_best_matches(self, query: str, entity_type: Literal["product", "customer"]) -> List[Tuple[str, float]]:
-        """Find the best matching items for a query based on entity type and prefix matching."""
+        """Find the best matching items using the hybrid similarity score."""
         items = self.products if entity_type == "product" else self.customers
         matches = []
 
-        # Adjust threshold based on if query seems to be a prefix
-        dynamic_threshold = min(self.threshold, 0.55) if len(query.split()) > 1 else self.threshold
-
         for item in items:
             similarity = self._similarity_ratio(query, item)
-            if similarity >= dynamic_threshold:
+            if similarity >= self.threshold:
                 matches.append((item, similarity))
-                
-        # Sort by similarity score (descending)
-        matches.sort(key=lambda x: x[1], reverse=True)
+
+        # Sort by score (descending), then alphabetically for consistent tie-breaking
+        matches.sort(key=lambda x: (-x[1], x[0]))
         
-        # Prioritize exact prefix matches
-        prefix_matches = []
-        other_matches = []
-        
-        for match in matches:
-            words = query.lower().split()
-            item_words = match[0].lower().split()
-            
-            # Check if query words are prefixes of item words
-            if all(any(iw.startswith(w) for iw in item_words) for w in words):
-                prefix_matches.append(match)
-            else:
-                other_matches.append(match)
-        
-        # Combine prefix matches first, then other matches
-        result = prefix_matches + other_matches
-        return result[:3]  # Return top 3 matches
+        # Return up to 5 best candidates for clarification
+        return matches[:5]
 
 class SynapseConnectionManager:
     """Singleton connection manager for Azure Synapse."""
@@ -941,48 +913,89 @@ Respond with ONLY the JSON object.
             return {"products": [], "customers": []}
 
     def _fuzzy_search(self, state: AgentState) -> AgentState:
-        """Perform fuzzy search on extracted entities and decide if clarification is needed."""
+        """
+        Perform a hybrid fuzzy search for BOTH products and customers, and trigger 
+        clarification for ambiguity OR misspellings.
+        """
         user_question = state["user_question"]
-        logger.info("Performing fuzzy search and clarification check.")
+        logger.info("Performing hybrid fuzzy search and clarification check for all entities.")
         
         extracted_entities = self._extract_entities_for_fuzzy_search(user_question)
         product_entities = extracted_entities.get("products", [])
         customer_entities = extracted_entities.get("customers", [])
         
-        replacements = {}
         clarifications_needed = {}
+        # Use a dictionary to track the prompt type for each entity
+        entity_prompt_types = {}
 
-        # Check product entities
+        # Threshold to decide if multiple matches signal ambiguity
+        AMBIGUITY_THRESHOLD = 0.9
+
+        # --- Block 1: Process Product Entities ---
         for entity in product_entities:
             matches = self.fuzzy_search_system.find_best_matches(entity, "product")
-            if matches:
-                best_match, best_score = matches[0]
-                if best_score < 1.0: # If it's not an exact match
-                    clarifications_needed[entity] = [match[0] for match in matches]
+            if not matches:
+                continue
 
-        # Check customer entities
+            ambiguous_matches = [m[0] for m in matches if m[1] >= AMBIGUITY_THRESHOLD]
+            
+            if len(ambiguous_matches) > 1:
+                clarifications_needed[entity] = ambiguous_matches
+                entity_prompt_types[entity] = "ambiguity"
+            elif matches and matches[0][0].lower() != entity.lower():
+                clarifications_needed[entity] = [m[0] for m in matches[:3]]
+                entity_prompt_types[entity] = "misspelling"
+
+        # --- Block 2: Process Customer Entities (The missing part) ---
         for entity in customer_entities:
+            # Use the exact same logic as above, but for the "customer" entity type
             matches = self.fuzzy_search_system.find_best_matches(entity, "customer")
-            if matches:
-                best_match, best_score = matches[0]
-                if best_score < 1.0:
-                    clarifications_needed[entity] = [match[0] for match in matches]
+            if not matches:
+                continue
 
+            ambiguous_matches = [m[0] for m in matches if m[1] >= AMBIGUITY_THRESHOLD]
+            
+            # Case 1: Ambiguity (e.g., user enters "John Smith" and there are multiple)
+            if len(ambiguous_matches) > 1:
+                clarifications_needed[entity] = ambiguous_matches
+                entity_prompt_types[entity] = "ambiguity"
+            # Case 2: Misspelling or incomplete name (e.g., "Jon Smit" or "Alice")
+            elif matches and matches[0][0].lower() != entity.lower():
+                clarifications_needed[entity] = [m[0] for m in matches[:3]]
+                entity_prompt_types[entity] = "misspelling"
+
+        # --- Final Prompt Generation ---
         if clarifications_needed:
             state["needs_clarification"] = True
-            prompt_parts = ["Did you mean:"]
+            prompt_parts = []
+            
+            # Check if there are any ambiguous entities to use the right header
+            has_ambiguity = any(ptype == "ambiguity" for ptype in entity_prompt_types.values())
+
+            if has_ambiguity:
+                prompt_parts.append("Your query is a bit ambiguous. Could you please clarify?")
+            else:
+                prompt_parts.append("Did you mean:")
+
             for original, suggestions in clarifications_needed.items():
-                suggestion_str = ' or '.join([f"**'{s}'**" for s in suggestions])
-                prompt_parts.append(f"- For **'{original}'**, did you mean {suggestion_str}?")
+                prompt_type = entity_prompt_types.get(original, "misspelling")
+                
+                if prompt_type == "ambiguity":
+                    prompt_parts.append(f"\nFor **'{original}'**, I found several matches. Please choose one:")
+                    for i, suggestion in enumerate(suggestions, 1):
+                        prompt_parts.append(f"{i}. {suggestion}")
+                else: # Misspelling
+                    suggestion_str = ' or '.join([f"**'{s}'**" for s in suggestions])
+                    prompt_parts.append(f"- For **'{original}'**, did you mean {suggestion_str}?")
+            
             state["clarification_prompt"] = "\n".join(prompt_parts)
             state["corrected_question"] = user_question
-            logger.warning(f"Clarification needed for: {clarifications_needed}")
+            logger.warning(f"Clarification needed: {clarifications_needed}")
         else:
             state["needs_clarification"] = False
             state["clarification_prompt"] = ""
-            # Here you could auto-correct if confidence is very high, but for now we proceed
             state["corrected_question"] = user_question
-            logger.info("No misspellings found or clarification needed.")
+            logger.info("No clarification needed.")
 
         return state
 
@@ -3366,24 +3379,16 @@ def display_chat_message(message_data, is_user=True, message_index=0):
     else:
         # Get response text
         response_text = message_data.get('response', message_data.get('content', ''))
-        formatted_response = response_text.replace('**', '<strong>').replace('**', '</strong>').replace('\n', '<br>')
+        
         # Display bot response inside the styled box
         st.markdown(f"""
         <div class="bot-message">
             <div class="bot-label"> DataBot</div>
             <div style="margin-top: 10px; line-height: 1.6;">
-                {formatted_response}
+                {response_text.replace('**', '<strong>').replace('**', '</strong>').replace('\n', '<br>')}
             </div>
         </div>
         """, unsafe_allow_html=True)
-        # st.markdown(f"""
-        # <div class="bot-message">
-        #     <div class="bot-label"> DataBot</div>
-        #     <div style="margin-top: 10px; line-height: 1.6;">
-        #         {response_text.replace('**', '<strong>').replace('**', '</strong>').replace('\n', '<br>')}
-        #     </div>
-        # </div>
-        # """, unsafe_allow_html=True)
 
         # # Show SQL query
         # if message_data.get('sql_query') and message_data.get('sql_query') not in ["Error occurred", "Error in SQL generation", ""]:
@@ -3561,7 +3566,7 @@ def process_user_input(user_input):
 def sidebar_interface():
     """Sidebar with session management and logo with user isolation."""
     with st.sidebar:
-        logo_path = "D:/datachat-ai/frontend/components/Coca-Cola_logo.svg.png" 
+        logo_path = "img.png" 
         logo_base64 = load_logo_base64(logo_path)
 
         if logo_base64:
