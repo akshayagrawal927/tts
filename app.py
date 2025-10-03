@@ -4836,7 +4836,7 @@ def process_user_input(user_input):
 def sidebar_interface():
     """Sidebar with session management and logo with user isolation."""
     with st.sidebar:
-        logo_path = "D:/datachat-ai/frontend/components/Coca-Cola_logo.svg.png" 
+        logo_path = "img.png" 
         logo_base64 = load_logo_base64(logo_path)
 
         if logo_base64:
