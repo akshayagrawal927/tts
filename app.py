@@ -75,7 +75,7 @@ logger = setup_logging()
 # Azure OpenAI Configuration
 AZURE_OPENAI_CONFIG = {
     'endpoint': "https://openai-cocacola-new.openai.azure.com/",
-    'api_key': os.getenv("AZURE_OPENAI_KEY"),
+    'api_key': os.getenv("AZURE_AD_SECRET"),
     'api_version': "2024-12-01-preview",
     'deployment': "gpt-4o",
     'model_name': "gpt-4o"
@@ -85,7 +85,7 @@ AZURE_OPENAI_CONFIG = {
 SYNAPSE_CONFIG = {
     'server': 'cocacola-synapse-new-ondemand.sql.azuresynapse.net',
     'database': 'sap_demo',
-    'driver': 'ODBC Driver 17 for SQL Server',
+    'driver': 'ODBC Driver 18 for SQL Server',
     'client_id': '4e02feac-1741-4460-88c4-d3a8aa5b9f10',
     'client_secret': os.getenv("AZURE_AD_SECRET"),
     'tenant_id': '638456b8-8343-4e48-9ebe-4f5cf9a1997d',
@@ -126,36 +126,45 @@ class WittyResponseManager:
         
         # Welcome messages pool
         self.welcome_messages = [
-            "Welcome aboard DataChat AI! I'm DataBot—your caffeine-free but hyper-curious analytics sidekick. Ask me anything from *'Show last quarter's sales trends'* to *'What's our top-selling product?'* and I'll happily dig through your data for nuggets of truth, whip up charts, and even spot time-based trends before your coffee cools.",
+            "Welcome aboard DataChat AI! I'm DataBot—your caffeine-free but hyper-curious analytics sidekick. Ask me anything from 'Show last quarter's sales trends' to 'What's our top-selling product?' and I'll happily dig through your data for nuggets of truth, whip up charts, and even spot time-based trends before your coffee cools.",
             
             "Hey there! I'm DataBot, your friendly neighborhood data detective. Think of me as Sherlock Holmes but for spreadsheets—minus the pipe, plus the SQL queries. Ready to solve some data mysteries together?",
             
             "Welcome to the data playground! I'm DataBot, and I speak fluent SQL, chart-ese, and insight-ish. Point me toward your questions and I'll turn your data into a treasure chest of answers.",
             
-            "Greetings, data explorer! DataBot here—part analyst, part magician, all algorithms. I transform your curiosity into charts, your questions into insights, and your confusion into clarity. What shall we discover first?"
+            "Greetings, data explorer! DataBot here—part analyst, part magician, all algorithms. I transform your curiosity into charts, your questions into insights, and your confusion into clarity. What shall we discover first?",
+
+            "Hello Leader! You're now plugged into Datachat AI—where questions meet instant intelligence. Consider me your strategy co-pilot."
         ]
         
         # Success response templates based on result count
         self.success_responses = {
             'single': [
                 "Bullseye! I tracked down exactly **1 record** that fits like a glove.",
+                "Bullseye—1 record found, sharper than a boardroom briefing.",
                 "Bingo! Found your needle in the haystack—exactly **1 record** that matches perfectly.",
                 "Perfect shot! Landed on exactly **1 record** that's precisely what you're after.",
                 "Gold! Struck exactly **1 record** that's right on target."
             ],
             'small': [  # 2-10 records
                 "Got it—**{count} records** neatly fetched and ready for your inspection. Small but mighty.",
+                "Just the right slice—{count} results ready for a quick leadership scan."
+                "{count} records lined up—focused insights without the clutter."
                 "Nice! Pulled up **{count} records** that fit the bill. Quality over quantity, right?",
                 "Sweet spot! Found **{count} records** that match your criteria—just enough to be interesting.",
-                "Perfect handful! **{count} records** served fresh from the database buffet."
+                "Perfect handful! **{count} records** served fresh from the database buffet.",
             ],
             'medium': [  # 11-100 records
+                " {count} records retrieved—enough to map trends, lean enough to stay sharp.",
+                "A healthy dataset—{count} entries for you to read between the lines.",
                 "Nice catch! I reeled in **{count} records** matching your specs—plenty to analyze, not enough to drown in.",
                 "Excellent haul! **{count} records** ready for action—enough data to tell a story without writing a novel.",
                 "Jackpot! **{count} records** that hit the sweet spot between 'too little' and 'too much.'",
                 "Beautiful! **{count} records** lined up like data soldiers, ready for your command."
             ],
             'large': [  # 100+ records
+                "Big wave incoming—{count} records. Let's cut through and surface the strategic signals.",
+                "Data firehose detected—{count} rows captured. Time to filter for what really matters."
                 "Data avalanche alert! I've hauled in **{count} records**. Bring your biggest spreadsheet appetite.",
                 "Wow! **{count} records** incoming—hope you've got your data processing pants on!",
                 "Holy datasets, Batman! **{count} records** at your service. Time to put on your analyst cape!",
@@ -166,6 +175,8 @@ class WittyResponseManager:
         # Empty result responses
         self.empty_responses = {
             'date_based': [
+                "No activity in that time frame—either calm seas, or filters too tight. Expand range?",
+
                 "Hmm, my time machine came back empty. No data for that period. Maybe nothing happened, or maybe the range is playing hard to get.\nWant me to widen the time window or try a different angle?",
                 
                 "Crickets... Nothing showed up for that timeframe. Either it was a really quiet period, or the data is playing hide-and-seek.\nShall we try casting a wider net?",
@@ -175,6 +186,8 @@ class WittyResponseManager:
                 "Plot twist: the data for that period is apparently on vacation. No records found.\nLet's try a broader date range or switch up the approach?"
             ],
             'general': [
+                "Searched the landscape—no matches. Could be filters playing defense. Try widening?",
+
                 "I scoured every corner and... nada. Could be a spelling twist, a filter too tight, or that record just doesn't exist.\nShall we loosen the filters or brainstorm a new lead?",
                 
                 "Well, this is awkward. My database dive came up dry. Maybe we're looking for a unicorn?\nLet's try rephrasing or relaxing those search criteria.",
@@ -188,6 +201,8 @@ class WittyResponseManager:
         # Error response templates
         self.error_responses = {
             'invalid_query': [
+                "I speak analytics, not riddles. Frame it in data terms, and I'm all yours.",
+
                 "Appreciate the enthusiasm, but I'm a data devotee, not a life coach.\nAsk me about sales, customers, product metrics, or time-based trends and I'm all ears (well...processors).",
                 
                 "I love the creativity, but I'm more 'SQL wizard' than 'general knowledge guru.'\nTry me with some juicy data questions—sales figures, customer insights, that sort of thing!",
@@ -197,6 +212,8 @@ class WittyResponseManager:
                 "Nice try, but I'm a one-trick pony—and that trick is turning data into insights!\nGot any burning questions about your business data?"
             ],
             'table_error': [
+                "Access denied—that table’s behind a locked door. Check permissions or ask support",
+
                 "Knock knock—no answer. Looks like the table structure may have changed.\nDouble-check those table names. Current VIP list: sales_data, customer_data, sapproduct.",
                 
                 "Table not found! It's like showing up to a party that moved venues.\nOur current guest list includes: sales_data, customer_data, sapproduct.",
@@ -206,6 +223,8 @@ class WittyResponseManager:
                 "Table troubles! It's either incognito or doesn't exist.\nStick with the classics: sales_data, customer_data, sapproduct."
             ],
             'column_error': [
+                "That column's off the map—possibly renamed or retired. Want me to show what's on the field?",
+
                 "Column? Never heard of it. Maybe it's under a different alias.\nTry a new name or ask what fields I *do* know about.",
                 
                 "That column is playing hide-and-seek and winning!\nMight be going by a different name—want to see what's actually available?",
@@ -215,6 +234,9 @@ class WittyResponseManager:
                 "Mystery column alert! Either it doesn't exist or it's using an alias.\nShall we investigate what's really available in there?"
             ],
             'syntax_error': [
+
+                "Query tripped over syntax. Let's simplify—one metric, one filter, one goal.",
+
                 "My SQL parser just raised an eyebrow. Let's simplify: ask one thing at a time with clear names and we'll be best friends again.",
                 
                 "Syntax hiccup! My brain got a little tangled there.\nLet's break it down—one question at a time works best for me.",
@@ -224,6 +246,8 @@ class WittyResponseManager:
                 "SQL syntax says 'nope!' Let's untangle this together.\nOne clear question at a time is my sweet spot."
             ],
             'data_type_error': [
+                "Type mismatch detected—recast and I'll process seamlessly.",
+                
                 "Oil and water don't mix—and neither do those data types.\nCould you rephrase with a bit more precision so I can blend it cleanly?",
                 
                 "Data type clash! Like trying to add apples and oranges.\nLet's adjust the query so everything plays nicely together.",
@@ -233,6 +257,8 @@ class WittyResponseManager:
                 "Data types are having a disagreement. Think oil and water, but geekier.\nLet's rephrase to make everyone happy."
             ],
             'general_error': [
+                "Backend hiccup—server or schema turbulence. Retry or let's adjust.",
+
                 "Something hiccupped on the database side. Could be a passing cloud in the server sky.\nTry again with a tighter query or ping support if the gremlins persist.",
                 
                 "Database burp! Sometimes the servers need a moment to collect themselves.\nGive it another shot, or contact support if it keeps being moody.",
@@ -245,6 +271,8 @@ class WittyResponseManager:
         
         # Processing messages
         self.processing_messages = [
+            "Running the numbers… insights en route",
+            "Query in motion—your data story is loading.",
             "Crunching numbers, wrangling rows... give me a second to work my DataBot magic.",
             "Diving deep into the data ocean—surfacing with insights in 3, 2, 1...",
             "SQL spells are brewing! Your data insights are cooking up nicely...",
@@ -254,6 +282,8 @@ class WittyResponseManager:
         ]
 
         self.greeting_responses = [
+            "Hello Leader! You're now plugged into Datachat AI—where questions meet instant intelligence. Consider me your strategy co-pilot."
+
             "Hi! I'm DataBot, your friendly data assistant. I specialize in analyzing your data and turning your questions into insights. What would you like to explore today?",
             
             "Hello there! DataBot here - ready to dive into your data and uncover some interesting insights. Ask me anything about your sales, customers, products, or any other data you'd like to analyze!",
@@ -873,7 +903,8 @@ class ContextAwareSynapseAgent:
     - Welcome warmly and briefly introduce DataBot's capabilities
     - Reference any greeting in their query naturally
     - Offer specific examples of what you can help with
-
+    -Example : 👋 Hello Leader! You're now plugged into Pulse AI—where questions meet instant intelligence. Consider me your strategy co-pilot.”
+                                                           
     **MIXED_INTENT (greeting + data request):**
     - Acknowledge greeting briefly (1 sentence max)
     - Immediately pivot to addressing their data request
@@ -894,6 +925,8 @@ class ContextAwareSynapseAgent:
     - Celebrate the successful query with relevant context
     - Highlight key findings from their specific request
     - Maintain professional enthusiasm
+
+
 
     **CRITICAL RULES:**
     - Preserve ALL factual information: numbers, names, dates
@@ -4803,7 +4836,7 @@ def process_user_input(user_input):
 def sidebar_interface():
     """Sidebar with session management and logo with user isolation."""
     with st.sidebar:
-        logo_path = "img.png" 
+        logo_path = "D:/datachat-ai/frontend/components/Coca-Cola_logo.svg.png" 
         logo_base64 = load_logo_base64(logo_path)
 
         if logo_base64:
