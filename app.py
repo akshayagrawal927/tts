@@ -85,7 +85,7 @@ AZURE_OPENAI_CONFIG = {
 SYNAPSE_CONFIG = {
     'server': 'cocacola-synapse-new-ondemand.sql.azuresynapse.net',
     'database': 'sap_demo',
-    'driver': 'ODBC Driver 18 for SQL Server',
+    'driver': 'ODBC Driver 17 for SQL Server',
     'client_id': '4e02feac-1741-4460-88c4-d3a8aa5b9f10',
     'client_secret': os.getenv("AZURE_AD_SECRET"),
     'tenant_id': '638456b8-8343-4e48-9ebe-4f5cf9a1997d',
