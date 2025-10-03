@@ -28,3 +28,4 @@ python-multipart
 # HTTP Client for Frontend-Backend Communication
 httpx
 requests
+thefuzz[speedup]
