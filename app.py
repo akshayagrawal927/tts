@@ -1,4 +1,3 @@
-
 """
 DataChat AI - Professional Text-to-SQL Assistant with Smart Charting and Fuzzy Search
 Intelligent Data Analytics Platform
@@ -8,6 +7,7 @@ from typing import Tuple
 import os
 import json
 import uuid
+import time
 import random
 import pyodbc
 import logging
@@ -71,7 +71,7 @@ def setup_logging():
 
 # Initialize logging
 logger = setup_logging()
-import os
+
 # Azure OpenAI Configuration
 AZURE_OPENAI_CONFIG = {
     'endpoint': "https://openai-cocacola-new.openai.azure.com/",
@@ -85,7 +85,7 @@ AZURE_OPENAI_CONFIG = {
 SYNAPSE_CONFIG = {
     'server': 'cocacola-synapse-new-ondemand.sql.azuresynapse.net',
     'database': 'sap_demo',
-    'driver': 'ODBC Driver 18 for SQL Server',
+    'driver': 'ODBC Driver 17 for SQL Server',
     'client_id': '4e02feac-1741-4460-88c4-d3a8aa5b9f10',
     'client_secret': os.getenv("AZURE_AD_SECRET"),
     'tenant_id': '638456b8-8343-4e48-9ebe-4f5cf9a1997d',
@@ -99,6 +99,17 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+def stream_response(text: str, delay: float = 0.03):
+    """
+    Generator function that yields characters from text with a delay.
+    Args:
+        text: The text to stream
+        delay: Delay between characters in seconds (0.03 = 30ms, human-like typing)
+    """
+    for char in text:
+        yield char
+        time.sleep(delay)
 
 class WittyResponseManager:
     """Manages intelligent, non-repetitive witty responses for DataBot"""
@@ -398,6 +409,24 @@ EXAMPLE SCENARIOS:
 - "Show me sales for Fanta" → Generate product-specific query (NO CONTEXT)
 - "Show me more results" → Use OFFSET from previous query (USE CONTEXT)
 - "What about that customer?" → Use customer from previous query (USE CONTEXT)
+
+**CONTEXTUAL QUERY EXAMPLES:**
+Example 1:
+Previous Query: "Show me last 5 orders of FATHIMA GROCERY"
+Previous SQL: SELECT TOP 5 * FROM dbo.sales_data WHERE CustomerName = 'FATHIMA GROCERY' ORDER BY OrderDate DESC
+User Query: "also show me first 5"
+Generated SQL: SELECT TOP 5 * FROM dbo.sales_data WHERE CustomerName = 'FATHIMA GROCERY' ORDER BY OrderDate ASC
+
+Example 2:
+Previous Query: "Show sales for Sprite Zero"
+Previous SQL: SELECT * FROM dbo.sales_data WHERE ProductDesc LIKE '%Sprite Zero%'
+User Query: "plot a pie chart for orders across different order sources"
+Generated SQL: SELECT OrderSource, COUNT(*) as OrderCount FROM dbo.sales_data WHERE ProductDesc LIKE '%Sprite Zero%' GROUP BY OrderSource
+
+**CHART REQUEST EXAMPLES:**
+- "plot a pie chart" → Generate GROUP BY query to get categorical data
+- "show a bar chart" → Generate aggregation query
+- "visualize trend" → Generate time-series query
 """
 
 # Improved Guardrails configuration
@@ -478,6 +507,8 @@ Silver	11-19 Orders per month
 Bronze	5-10 Orders per month
 """
 
+from thefuzz import fuzz # Add this import at the top of your file
+
 class FuzzySearch:
     """A system for performing fuzzy matching on product and customer names."""
     def __init__(self, products: List[str], customers: List[str], threshold: float = 0.35):
@@ -486,52 +517,92 @@ class FuzzySearch:
         self.threshold = threshold
         logger.info(f"FuzzySearch initialized with {len(products)} products and {len(customers)} customers.")
 
-    def _similarity_ratio(self, s1: str, s2: str) -> float:
-        """
-        Calculate a hybrid similarity score, prioritizing exact, substring, and prefix 
-        matches while still handling spelling errors.
-        """
-        s1, s2 = s1.lower(), s2.lower()
-
-        # 1. Perfect Match (Score: 1.0)
-        if s1 == s2:
-            return 1.0
-
-        # 2. Baseline Spelling Similarity using SequenceMatcher
-        base_similarity = SequenceMatcher(None, s1, s2).ratio()
-
-        # 3. Substring Match Score (for ambiguity like "Coke Light")
-        substring_score = 0.0
-        if s1 in s2:
-            # Give a very high score, adjusted by how much of the target is matched
-            substring_score = 0.9 + (0.1 * (len(s1) / len(s2)))
-
-        # 4. Prefix Match Score (for incomplete words like "Fanta Straw")
-        prefix_score = 0.0
-        words1 = s1.split()
-        words2 = s2.split()
-        if words1 and words2 and all(any(w2.startswith(w1) for w2 in words2) for w1 in words1):
-            # Also give a high score, but slightly less than a full substring match
-            prefix_score = 0.8 + (0.15 * (len(s1) / len(s2)))
-            
-        # Return the highest score from all checks
-        return max(base_similarity, substring_score, prefix_score)
-
     def find_best_matches(self, query: str, entity_type: Literal["product", "customer"]) -> List[Tuple[str, float]]:
-        """Find the best matching items using the hybrid similarity score."""
+        """Find the best matching items for a query using a more advanced ratio."""
         items = self.products if entity_type == "product" else self.customers
+        query_lower = query.lower()
         matches = []
 
         for item in items:
-            similarity = self._similarity_ratio(query, item)
-            if similarity >= self.threshold:
-                matches.append((item, similarity))
+            # Use token_set_ratio, which is excellent for matching strings with different word counts
+            # e.g., "coke sleek can" vs "coke 330ml 1x24 np sleek can"
+            # It finds the common tokens and compares them.
+            similarity_score = fuzz.token_set_ratio(query_lower, item.lower())
 
-        # Sort by score (descending), then alphabetically for consistent tie-breaking
-        matches.sort(key=lambda x: (-x[1], x[0]))
-        
-        # Return up to 5 best candidates for clarification
+            # Convert to a 0-1 float scale
+            similarity_float = similarity_score / 100.0
+
+            if similarity_float >= self.threshold:
+                matches.append((item, similarity_float))
+
+        # Sort by similarity score (descending)
+        matches.sort(key=lambda x: x[1], reverse=True)
+
+        # Return top 5 matches for better suggestions
         return matches[:5]
+
+    def _similarity_ratio(self, s1: str, s2: str) -> float:
+        """Calculate similarity ratio with improved exact matching."""
+        s1, s2 = s1.lower().strip(), s2.lower().strip()
+        
+        # Perfect exact match
+        if s1 == s2:
+            return 1.0
+        
+        # Check for exact substring matches (for longer strings)
+        if len(s1) > 4 and len(s2) > 4:
+            if s1 in s2:
+                return 0.98  # Very high score for exact substring
+            if s2 in s1:
+                return 0.98
+        
+        # Standard similarity using SequenceMatcher
+        base_similarity = SequenceMatcher(None, s1, s2).ratio()
+        
+        # Word-level matching for multi-word entities
+        words1 = s1.split()
+        words2 = s2.split()
+        
+        if len(words1) > 1 or len(words2) > 1:
+            # Count matching words
+            common_words = 0
+            total_words = max(len(words1), len(words2))
+            
+            for w1 in words1:
+                for w2 in words2:
+                    if w1 == w2:  # Exact word match
+                        common_words += 1
+                        break
+                    elif len(w1) > 3 and len(w2) > 3 and (w1 in w2 or w2 in w1):
+                        common_words += 0.8
+                        break
+                    elif SequenceMatcher(None, w1, w2).ratio() > 0.85:
+                        common_words += 0.6
+                        break
+            
+            word_similarity = common_words / total_words
+            return max(base_similarity, word_similarity)
+        
+        return base_similarity
+
+    # def find_best_matches(self, query: str, entity_type: Literal["product", "customer"]) -> List[Tuple[str, float]]:
+    #     """Find the best matching items for a query."""
+    #     items = self.products if entity_type == "product" else self.customers
+    #     matches = []
+
+    #     # Use a lower threshold for initial matching
+    #     threshold = 0.2  
+
+    #     for item in items:
+    #         similarity = self._similarity_ratio(query, item)
+    #         if similarity >= threshold:
+    #             matches.append((item, similarity))
+                
+    #     # Sort by similarity score (descending)
+    #     matches.sort(key=lambda x: x[1], reverse=True)
+        
+    #     # Return top 5 matches for better suggestions
+    #     return matches[:5]
 
 class SynapseConnectionManager:
     """Singleton connection manager for Azure Synapse."""
@@ -706,14 +777,24 @@ class AgentState(TypedDict):
     chart_code: str
     follow_up_questions: List[str]
     session_id: str
-    thread_id: str  # Add this line
+    thread_id: str
     error_message: str
     conversation_context: Dict[str, Any]
     previous_queries: List[str]
+    
+    # NEW: Intent classification fields
+    primary_intent: str
+    contains_greeting: bool
+    contains_data_request: bool
+    intent_reasoning: str
+    
+    # Keep existing fields
     is_valid_query: bool
+    is_greeting: bool
     needs_clarification: bool
     clarification_prompt: str
     best_chart_type: str
+    user_intent: str
     visualization_suggestion: str
 
 class ContextAwareSynapseAgent:
@@ -749,9 +830,102 @@ class ContextAwareSynapseAgent:
         self.conversation_context = {}
         self.query_history = []
 
+        self.pending_clarification = None
+
         self.response_manager = WittyResponseManager()
 
         logger.info("Context-Aware Azure Synapse Agent initialized successfully")
+        
+    def _rephrase_message_with_llm(self, original_message: str, user_query: str = "", 
+                                message_type: str = "general") -> str:
+        """
+        Uses LLM to rephrase messages with full context awareness.
+        
+        Args:
+            original_message: The base message to rephrase
+            user_query: The original user question for context
+            message_type: Type of message (greeting, error, success, invalid_query)
+        """
+        logger.info(f"Rephrasing {message_type} message with user context")
+        
+        if not original_message or not isinstance(original_message, str):
+            return ""
+
+        rephrase_prompt = ChatPromptTemplate.from_template("""
+    You are a professional communication specialist for DataBot, an AI data analytics assistant.
+
+    **CONTEXT:**
+    - Message Type: {message_type}
+    - User's Original Query: "{user_query}"
+    - Base Response Template: "{original_message}"
+
+    **YOUR TASK:**
+    Rephrase the base response to be:
+    1. **Contextually relevant** to the user's specific query
+    2. **Personalized** - reference specific elements from their question
+    3. **Warm and professional** - friendly but business-appropriate
+    4. **Culturally sensitive** - suitable for Middle East Gulf Countries audience
+    5. **Factually accurate** - preserve all data, numbers, and technical details
+
+    **RESPONSE GUIDELINES BY TYPE:**
+
+    **GREETING_ONLY:**
+    - Welcome warmly and briefly introduce DataBot's capabilities
+    - Reference any greeting in their query naturally
+    - Offer specific examples of what you can help with
+
+    **MIXED_INTENT (greeting + data request):**
+    - Acknowledge greeting briefly (1 sentence max)
+    - Immediately pivot to addressing their data request
+    - Show you understood both parts of their query
+
+    **INVALID_QUERY:**
+    - Politely acknowledge their question
+    - Explain you specialize in data analytics for their business
+    - Redirect to data-related capabilities with specific examples
+    - Keep tone helpful, not dismissive
+
+    **ERROR:**
+    - Acknowledge what they were trying to do specifically
+    - Explain the issue in simple terms
+    - Provide actionable next steps
+
+    **SUCCESS:**
+    - Celebrate the successful query with relevant context
+    - Highlight key findings from their specific request
+    - Maintain professional enthusiasm
+
+    **CRITICAL RULES:**
+    - Preserve ALL factual information: numbers, names, dates
+    - Keep markdown formatting for emphasis
+    - Don't add information not in the original message
+    - Reference the user's query naturally where appropriate
+    - Keep response concise (2-4 sentences for greetings, longer for data responses)
+
+    **OUTPUT:**
+    Provide only the rephrased message with no meta-commentary.
+    """)
+
+        try:
+            formatted_prompt = rephrase_prompt.format(
+                message_type=message_type,
+                user_query=user_query,
+                original_message=original_message
+            )
+            
+            response = self.llm.invoke([HumanMessage(content=formatted_prompt)])
+            rephrased_content = response.content.strip()
+
+            if not rephrased_content:
+                logger.warning("LLM rephrasing returned empty. Using original.")
+                return original_message
+
+            logger.info(f"Successfully rephrased {message_type} message")
+            return rephrased_content
+            
+        except Exception as e:
+            logger.error(f"Failed to rephrase message: {e}")
+            return original_message
 
     def _check_for_no_context_error(self, state: AgentState) -> Literal["error", "continue"]:
         """Checks if the SQL generation step resulted in a NO_CONTEXT_ERROR."""
@@ -763,7 +937,12 @@ class ContextAwareSynapseAgent:
         """Handles the specific error when context is needed but not available."""
         logger.warning("Handling NO_CONTEXT_ERROR. Bypassing SQL execution.")
         
-        state["final_response"] = "No previous query context available. Please provide a specific query first."
+        base_response = "No previous query context available. Please provide a specific query first."
+        state["final_response"] = self._rephrase_message_with_llm(
+    base_response,
+    user_query=state.get("user_question", ""),
+    message_type="ERROR"
+)
         state["query_result"] = pd.DataFrame() # Ensure result is empty
         state["chart_code"] = ""
         state["follow_up_questions"] = [
@@ -772,16 +951,131 @@ class ContextAwareSynapseAgent:
             "Would you like to see customer analytics?"
         ]
         return state
+    
+    def _classify_intent_with_llm(self, state: AgentState) -> AgentState:
+        """Use LLM to classify user intent and route appropriately."""
+        user_question = state["user_question"]
+        
+        # Check for pending clarification first
+        pending_clarification = None
+        if hasattr(self, 'pending_clarification') and self.pending_clarification:
+            pending_clarification = self.pending_clarification
+        elif 'pending_clarification' in st.session_state:
+            pending_clarification = st.session_state['pending_clarification']
+        
+        logger.info(f"Classifying intent for: {user_question[:100]}...")
+        
+        intent_prompt = ChatPromptTemplate.from_template("""
+    You are an intent classification expert for a data analytics chatbot.
+
+    Analyze the user's query and classify it into ONE primary intent:
+
+    USER QUERY: "{user_question}"
+
+    HAS PENDING CLARIFICATION: {has_pending}
+
+    INTENT CATEGORIES:
+    1. **CLARIFICATION_RESPONSE** - User responding to a clarification question (numbers like "1", "2", "first", "second", or entity names)
+    2. **GREETING_ONLY** - Pure greetings with NO data request (e.g., "hi", "hello", "good morning" ONLY)
+    3. **MIXED_INTENT** - Greeting + Data request in one query (e.g., "hi, show me sales data", "hello list customers")
+    4. **DATA_QUERY** - Any request for data, analysis, or SQL query without greeting
+    5. **CHART_MODIFICATION** - Request to modify existing chart colors/styling
+    6. **INVALID_QUERY** - Non-data questions (trivia, general knowledge, personal advice, who is X, what is Y)
+
+    CRITICAL RULES:
+    - If HAS_PENDING_CLARIFICATION is true AND query looks like a response (numbers/selections) → CLARIFICATION_RESPONSE
+    - If query contains BOTH greeting AND data request → MIXED_INTENT (NOT GREETING_ONLY)
+    - "hi, list customers", "hello show sales", "good morning get data" = MIXED_INTENT
+    - Pure "hi", "hello", "good morning" with nothing else = GREETING_ONLY
+    - "who is", "what is", "tell me about [non-data topic]" = INVALID_QUERY
+    - Prioritize data requests over greetings
+
+    Respond ONLY with valid JSON:
+    {{
+        "primary_intent": "CLARIFICATION_RESPONSE|GREETING_ONLY|MIXED_INTENT|DATA_QUERY|CHART_MODIFICATION|INVALID_QUERY",
+        "contains_greeting": true/false,
+        "contains_data_request": true/false,
+        "reasoning": "Brief explanation",
+        "extracted_data_query": "If MIXED_INTENT, extract only the data request part, otherwise empty string"
+    }}
+    """)
+
+        try:
+            formatted_prompt = intent_prompt.format(
+                user_question=user_question,
+                has_pending=bool(pending_clarification)
+            )
+            
+            response = self.llm.invoke([HumanMessage(content=formatted_prompt)])
+            
+            # Parse JSON response
+            json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
+            if json_match:
+                intent_data = json.loads(json_match.group())
+                
+                state["primary_intent"] = intent_data.get("primary_intent", "DATA_QUERY")
+                state["contains_greeting"] = intent_data.get("contains_greeting", False)
+                state["contains_data_request"] = intent_data.get("contains_data_request", False)
+                state["intent_reasoning"] = intent_data.get("reasoning", "")
+                
+                # For MIXED_INTENT, extract the data query part
+                if state["primary_intent"] == "MIXED_INTENT" and intent_data.get("extracted_data_query"):
+                    extracted = intent_data["extracted_data_query"].strip()
+                    if extracted:
+                        logger.info(f"Mixed intent detected. Original: '{user_question}' -> Extracted: '{extracted}'")
+                        state["user_question"] = extracted
+                
+                logger.info(f"Intent: {state['primary_intent']} | Reasoning: {state['intent_reasoning']}")
+                
+                # Set legacy flags for compatibility
+                state["is_greeting"] = (state["primary_intent"] == "GREETING_ONLY")
+                state["is_valid_query"] = (state["primary_intent"] not in ["GREETING_ONLY", "INVALID_QUERY"])
+                
+                return state
+            
+        except Exception as e:
+            logger.error(f"Intent classification failed: {e}")
+            # Safe fallback
+            state["primary_intent"] = "DATA_QUERY"
+            state["contains_greeting"] = False
+            state["contains_data_request"] = True
+            state["is_greeting"] = False
+            state["is_valid_query"] = True
+            
+        return state
+    
+    def _route_by_intent(self, state: AgentState) -> Literal["greeting", "invalid", "clarification", "resolve_clarification", "chart_modification", "data_query"]:
+        """Route based on LLM-classified intent."""
+        intent = state.get("primary_intent", "DATA_QUERY")
+        
+        logger.info(f"Routing decision for intent: {intent}")
+        
+        # Priority routing
+        if intent == "CLARIFICATION_RESPONSE":
+            return "resolve_clarification" 
+        elif intent == "GREETING_ONLY":
+            return "greeting"
+        elif intent == "CHART_MODIFICATION":
+            return "chart_modification"
+        elif intent == "INVALID_QUERY":
+            return "invalid"
+        elif intent in ["DATA_QUERY", "MIXED_INTENT"]:
+            return "data_query"
+        
+        # Default fallback
+        return "data_query"
 
     def _create_graph(self) -> StateGraph:
-        """Create the LangGraph workflow with charting capabilities."""
-        logger.debug("Creating LangGraph workflow")
+        """Create the LangGraph workflow with LLM-based intent routing."""
+        logger.debug("Creating LangGraph workflow with LLM intent classification")
         workflow = StateGraph(AgentState)
 
-        # Add nodes
-        workflow.add_node("validate_query", self._validate_query)
+        # Add nodes - NEW: classify_intent replaces validate_query
+        workflow.add_node("classify_intent", self._classify_intent_with_llm)
+        workflow.add_node("resolve_clarification", self._resolve_clarification)
         workflow.add_node("analyze_query", self._analyze_query)
         workflow.add_node("fuzzy_search", self._fuzzy_search)
+        workflow.add_node("extract_intent", self._extract_intent)
         workflow.add_node("generate_sql", self._generate_sql)
         workflow.add_node("execute_sql", self._execute_sql)
         workflow.add_node("generate_response", self._generate_response)
@@ -792,24 +1086,37 @@ class ContextAwareSynapseAgent:
         workflow.add_node("handle_error", self._handle_error)
         workflow.add_node("handle_invalid", self._handle_invalid_query)
         workflow.add_node("handle_clarification", self._handle_clarification)
-        
-        # ===> NEW NODE FOR OUR SPECIFIC ERROR <===
+        workflow.add_node("modify_chart", self._modify_existing_chart)
+        workflow.add_node("handle_greeting", self._handle_greeting)
         workflow.add_node("handle_no_context_error", self._handle_no_context_error)
 
+        # Set entry point - CHANGED from validate_query to classify_intent
+        workflow.set_entry_point("classify_intent")
 
-        # Define edges
-        workflow.set_entry_point("validate_query")
-
+        # NEW: LLM-based routing instead of hardcoded checks
         workflow.add_conditional_edges(
-            "validate_query",
-            self._check_query_validity,
+            "classify_intent",
+            self._route_by_intent,
             {
-                "valid": "analyze_query",
-                "invalid": "handle_invalid"
+                "greeting": "handle_greeting",
+                "invalid": "handle_invalid",
+                "clarification": "handle_clarification",
+                "resolve_clarification": "resolve_clarification",  # <<< ADD THE NEW ROUTE
+                "chart_modification": "modify_chart",
+                "data_query": "analyze_query"
             }
         )
-
+        
+        # Terminal nodes
+        workflow.add_edge("handle_greeting", END)
         workflow.add_edge("handle_invalid", END)
+        workflow.add_edge("handle_clarification", END)
+        
+        # Chart modification leads to response
+        workflow.add_edge("modify_chart", "generate_response")
+        workflow.add_edge("resolve_clarification", "analyze_query")
+
+        # Main data processing flow
         workflow.add_edge("analyze_query", "fuzzy_search")
 
         workflow.add_conditional_edges(
@@ -817,25 +1124,33 @@ class ContextAwareSynapseAgent:
             self._check_clarification_needed,
             {
                 "clarify": "handle_clarification",
-                "continue": "generate_sql"
+                "continue": "extract_intent"
+            }
+        )
+
+        workflow.add_edge("extract_intent", "check_chart_modification")
+
+        workflow.add_node("check_chart_modification", lambda state: state)
+        workflow.add_conditional_edges(
+            "check_chart_modification",
+            self._detect_chart_modification_request,
+            {
+                "modify_chart": "modify_chart",
+                "generate_sql": "generate_sql"
             }
         )
         
-        workflow.add_edge("handle_clarification", END)
-        
-        # ===> REPLACE THE OLD 'generate_sql' EDGE WITH THIS CONDITIONAL ONE <===
         workflow.add_conditional_edges(
             "generate_sql",
             self._check_for_no_context_error,
             {
-                "error": "handle_no_context_error", # Go to our new handler
-                "continue": "execute_sql"         # Continue normally
+                "error": "handle_no_context_error",
+                "continue": "execute_sql"
             }
         )
-        # New edge to terminate the flow after handling the error
+        
         workflow.add_edge("handle_no_context_error", END)
-        # =========================================================================
-
+        
         workflow.add_conditional_edges(
             "execute_sql",
             self._check_sql_execution,
@@ -868,29 +1183,36 @@ class ContextAwareSynapseAgent:
         logger.info(f"Extracting entities from query: {user_question}")
         
         ner_prompt = ChatPromptTemplate.from_template("""
-You are a highly accurate Named Entity Recognition (NER) model. Your task is to extract potential product names and customer names from the user's query.
+You are a highly accurate Named Entity Recognition (NER) model for a beverage/retail database.
 
 User Query: "{user_question}"
 
-Extract the entities and return them in a JSON format with two keys: "products" and "customers".
-- The values should be a list of strings.
-- If no entities of a certain type are found, return an empty list for that key.
-- Be precise. Only extract names that are clearly products or customers.
+Extract ONLY clear product names and customer/company names from the user's query.
 
-Example:
-User Query: "Show sales for Fanta and for customer Alice Johnson"
-Response:
-{{
-  "products": ["Fanta"],
-  "customers": ["Alice Johnson"]
-}}
+RULES:
+1. **Products**: Look for beverage names, brands, sizes, packaging types
+   - Examples: "Sprite Zero", "Coca Cola 330ml", "Fanta Orange Can"
+   - Include size/packaging if mentioned: "330ml", "Sleek Can", "4x6 NP"
+   
+2. **Customers**: Look for company names, business entities, trading names
+   - Examples: "DUBAI GATE", "Trading Company", "F/S & TRADING"
+   - Include business suffixes: "TRADING", "COMPANY", "HOTEL"
 
-User Query: "Total revenue last month"
-Response:
-{{
-  "products": [],
-  "customers": []
-}}
+3. **DO NOT extract**:
+   - Generic terms: "orders", "sales", "data", "revenue"
+   - Time periods: "Q1", "Q2", "last year", "this month"
+   - Actions: "show", "list", "compare", "analyze"
+
+4. **BE CONSERVATIVE**: Only extract if you're confident it's a product or customer name
+
+Return JSON with "products" and "customers" arrays. If unsure, return empty arrays.
+
+Examples:
+Query: "Show sales for Sprite Zero and DUBAI GATE TRADING"
+Response: {{"products": ["Sprite Zero"], "customers": ["DUBAI GATE TRADING"]}}
+
+Query: "Compare Q1 vs Q2 revenue trends"  
+Response: {{"products": [], "customers": []}}
 
 Respond with ONLY the JSON object.
 """)
@@ -913,63 +1235,84 @@ Respond with ONLY the JSON object.
             return {"products": [], "customers": []}
 
     def _fuzzy_search(self, state: AgentState) -> AgentState:
-        """
-        Perform a hybrid fuzzy search for BOTH products and customers, and trigger 
-        clarification for ambiguity OR misspellings.
-        """
+        """Perform hybrid fuzzy search and trigger clarification."""
         user_question = state["user_question"]
-        logger.info("Performing hybrid fuzzy search and clarification check for all entities.")
+        logger.info("Performing fuzzy search with clarification check")
         
         extracted_entities = self._extract_entities_for_fuzzy_search(user_question)
         product_entities = extracted_entities.get("products", [])
         customer_entities = extracted_entities.get("customers", [])
         
         clarifications_needed = {}
-        # Use a dictionary to track the prompt type for each entity
         entity_prompt_types = {}
+        entity_types_map = {}  # **NEW: Track which type each entity is**
+        
+        AMBIGUITY_THRESHOLD = 0.90
+        MIN_SUGGESTION_THRESHOLD = 0.70
 
-        # Threshold to decide if multiple matches signal ambiguity
-        AMBIGUITY_THRESHOLD = 0.9
-
-        # --- Block 1: Process Product Entities ---
+        # Process Products
         for entity in product_entities:
+            if entity in self.fuzzy_search_system.products:
+                continue
+
             matches = self.fuzzy_search_system.find_best_matches(entity, "product")
             if not matches:
                 continue
 
-            ambiguous_matches = [m[0] for m in matches if m[1] >= AMBIGUITY_THRESHOLD]
-            
-            if len(ambiguous_matches) > 1:
-                clarifications_needed[entity] = ambiguous_matches
-                entity_prompt_types[entity] = "ambiguity"
-            elif matches and matches[0][0].lower() != entity.lower():
-                clarifications_needed[entity] = [m[0] for m in matches[:3]]
-                entity_prompt_types[entity] = "misspelling"
+            high_quality_matches = [m for m in matches if m[1] >= AMBIGUITY_THRESHOLD]
 
-        # --- Block 2: Process Customer Entities (The missing part) ---
+            if len(high_quality_matches) > 1:
+                clarifications_needed[entity] = [m[0] for m in high_quality_matches[:5]]
+                entity_prompt_types[entity] = "ambiguity"
+                entity_types_map[entity] = "product"  # **NEW**
+            elif len(high_quality_matches) == 1:
+                logger.info(f"Single match for product '{entity}': {high_quality_matches[0][0]}")
+            else:
+                suggestions = [m[0] for m in matches if m[1] >= MIN_SUGGESTION_THRESHOLD][:3]
+                if suggestions:
+                    clarifications_needed[entity] = suggestions
+                    entity_prompt_types[entity] = "misspelling"
+                    entity_types_map[entity] = "product"  # **NEW**
+        
+        # Process Customers (same pattern)
         for entity in customer_entities:
-            # Use the exact same logic as above, but for the "customer" entity type
+            if entity in self.fuzzy_search_system.customers:
+                continue
+            
             matches = self.fuzzy_search_system.find_best_matches(entity, "customer")
             if not matches:
                 continue
-
-            ambiguous_matches = [m[0] for m in matches if m[1] >= AMBIGUITY_THRESHOLD]
             
-            # Case 1: Ambiguity (e.g., user enters "John Smith" and there are multiple)
-            if len(ambiguous_matches) > 1:
-                clarifications_needed[entity] = ambiguous_matches
-                entity_prompt_types[entity] = "ambiguity"
-            # Case 2: Misspelling or incomplete name (e.g., "Jon Smit" or "Alice")
-            elif matches and matches[0][0].lower() != entity.lower():
-                clarifications_needed[entity] = [m[0] for m in matches[:3]]
-                entity_prompt_types[entity] = "misspelling"
+            high_quality_matches = [m for m in matches if m[1] >= AMBIGUITY_THRESHOLD]
 
-        # --- Final Prompt Generation ---
+            if len(high_quality_matches) > 1:
+                clarifications_needed[entity] = [m[0] for m in high_quality_matches[:5]]
+                entity_prompt_types[entity] = "ambiguity"
+                entity_types_map[entity] = "customer"  # **NEW**
+            elif len(high_quality_matches) == 1:
+                logger.info(f"Single match for customer '{entity}': {high_quality_matches[0][0]}")
+            else:
+                suggestions = [m[0] for m in matches if m[1] >= MIN_SUGGESTION_THRESHOLD][:3]
+                if suggestions:
+                    clarifications_needed[entity] = suggestions
+                    entity_prompt_types[entity] = "misspelling"
+                    entity_types_map[entity] = "customer"  # **NEW**
+
         if clarifications_needed:
             state["needs_clarification"] = True
-            prompt_parts = []
             
-            # Check if there are any ambiguous entities to use the right header
+            clarification_context = {
+                "original_query": state["user_question"],
+                "entity_suggestions": clarifications_needed,
+                "entity_types": entity_prompt_types,
+                "entity_type_map": entity_types_map  # **NEW: For better LLM understanding**
+            }
+            
+            self.pending_clarification = clarification_context
+            st.session_state['pending_clarification'] = clarification_context
+            
+            # Build clarification prompt
+            prompt_parts = []
             has_ambiguity = any(ptype == "ambiguity" for ptype in entity_prompt_types.values())
 
             if has_ambiguity:
@@ -979,26 +1322,317 @@ Respond with ONLY the JSON object.
 
             for original, suggestions in clarifications_needed.items():
                 prompt_type = entity_prompt_types.get(original, "misspelling")
+                entity_type = entity_types_map.get(original, "entity")
                 
                 if prompt_type == "ambiguity":
-                    prompt_parts.append(f"\nFor **'{original}'**, I found several matches. Please choose one:")
+                    prompt_parts.append(f"\nFor **'{original}'** ({entity_type}), I found several matches. Please choose one:")
                     for i, suggestion in enumerate(suggestions, 1):
                         prompt_parts.append(f"{i}. {suggestion}")
-                else: # Misspelling
-                    suggestion_str = ' or '.join([f"**'{s}'**" for s in suggestions])
-                    prompt_parts.append(f"- For **'{original}'**, did you mean {suggestion_str}?")
+                else:
+                    if len(suggestions) == 1:
+                        prompt_parts.append(f"- For **'{original}'** ({entity_type}), did you mean **'{suggestions[0]}'**?")
+                    else:
+                        suggestion_str = ' or '.join([f"**'{s}'**" for s in suggestions])
+                        prompt_parts.append(f"- For **'{original}'** ({entity_type}), did you mean {suggestion_str}?")
             
             state["clarification_prompt"] = "\n".join(prompt_parts)
             state["corrected_question"] = user_question
             logger.warning(f"Clarification needed: {clarifications_needed}")
         else:
             state["needs_clarification"] = False
-            state["clarification_prompt"] = ""
             state["corrected_question"] = user_question
-            logger.info("No clarification needed.")
+            self.pending_clarification = None
+            if 'pending_clarification' in st.session_state:
+                del st.session_state['pending_clarification']
 
         return state
+    
+    def _is_clarification_response(self, user_input: str) -> bool:
+        """Check if user input is a clarification response using intelligent patterns."""
+        
+        # Log at entry
+        print(f"DEBUG: _is_clarification_response CALLED with input: '{user_input}'")
+        logger.info(f"DEBUG: _is_clarification_response CALLED with input: '{user_input}'")
+        
+        if not user_input:
+            logger.info("❌ Empty input - not clarification")
+            return False
+            
+        user_input_lower = user_input.lower().strip()
+        
+        # Check if we have pending clarification
+        has_pending = bool(self.pending_clarification or st.session_state.get('pending_clarification'))
+        
+        logger.info(f"DEBUG: has_pending = {has_pending}")
+        logger.info(f"DEBUG: self.pending_clarification = {self.pending_clarification is not None}")
+        logger.info(f"DEBUG: st.session_state pending = {st.session_state.get('pending_clarification') is not None}")
+        
+        if not has_pending:
+            logger.info("❌ No pending clarification - not clarification response")
+            return False
+        
+        logger.info(f"🔍 Checking if clarification response: '{user_input}'")
+        
+        # **Word-to-number mapping**
+        number_words = {
+                'one': '1', 'first': '1','1st': '1',
+                'two': '2', 'second': '2','2nd': '2',
+                'three': '3', 'third': '3','3rd': '3',
+                'four': '4', 'fourth': '4','4th': '4',
+                'five': '5', 'fifth': '5','5th': '5',
+            }
+        
+        # Pattern 1: Simple single number (1-10)
+        logger.info(f"DEBUG: Testing Pattern 1")
+        if user_input_lower.isdigit():
+            num = int(user_input_lower)
+            if 1 <= num <= 10:
+                logger.info(f"✅ Pattern 1: Single number clarification: {num}")
+                return True
+        
+        # Pattern 2: Single number word
+        logger.info(f"DEBUG: Testing Pattern 2")
+        if user_input_lower in number_words:
+            logger.info(f"✅ Pattern 2: Single number word clarification: {user_input_lower}")
+            return True
+        
+        # Pattern 3: Multiple numbers/words with separators
+        logger.info(f"DEBUG: Testing Pattern 3")
+        
+        # Convert number words to digits first
+        converted_input = user_input_lower
+        for word, digit in number_words.items():
+            converted_input = re.sub(r'\b' + word + r'\b', digit, converted_input)
+        
+        logger.info(f"   Converted: '{user_input_lower}' → '{converted_input}'")
+        
+        # Remove separators
+        cleaned = re.sub(r'\b(and|or|&|,)\b', ' ', converted_input)
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        tokens = cleaned.split()
+        
+        logger.info(f"   Cleaned: '{cleaned}'")
+        logger.info(f"   Tokens: {tokens}")
+        
+        # Count numeric tokens
+        number_tokens = [t for t in tokens if t.isdigit()]
+        logger.info(f"   Number tokens: {number_tokens}")
+        
+        if number_tokens:
+            ratio = len(number_tokens) / len(tokens) if tokens else 0
+            logger.info(f"   Ratio: {ratio:.2f} (threshold: 0.4)")
+            
+            if ratio >= 0.4:
+                logger.info(f"✅ Pattern 3: Multi-number clarification detected")
+                return True
+            else:
+                logger.info(f"   Pattern 3 failed: ratio {ratio:.2f} < 0.4")
+        else:
+            logger.info(f"   Pattern 3 failed: no number tokens found")
+        
+        # Pattern 4: Explicit selection phrases
+        logger.info(f"DEBUG: Testing Pattern 4")
+        confirmation_phrases = [
+            'yes', 'correct', 'right', 'exactly', 'yep', 'yeah',
+            'first one', 'second one', 'third one', 'fourth one', 'fifth one',
+            'that one', 'this one', 'both', 'all of them',
+            'the first', 'the second', 'the third'
+        ]
+        
+        matched_phrases = [phrase for phrase in confirmation_phrases if phrase in user_input_lower]
+        if matched_phrases:
+            logger.info(f"✅ Pattern 4: Confirmation phrase detected: {matched_phrases}")
+            return True
+        
+        # Pattern 5: "I meant" or "I want" constructions
+        logger.info(f"DEBUG: Testing Pattern 5")
+        intent_phrases = ['i meant', 'i want', 'i choose', 'i pick', 'i select',
+                        'select', 'choose', 'pick', 'go with', 'use']
+        
+        matched_intent = [phrase for phrase in intent_phrases if phrase in user_input_lower]
+        if matched_intent:
+            logger.info(f"✅ Pattern 5: Intent phrase detected: {matched_intent}")
+            return True
+        
+        # Pattern 6: Very short responses with pending clarification
+        logger.info(f"DEBUG: Testing Pattern 6 (length: {len(user_input)})")
+        if len(user_input) <= 15:
+            has_digit = bool(re.search(r'\d', user_input_lower))
+            has_number_word = any(word in user_input_lower for word in number_words.keys())
+            
+            logger.info(f"   Has digit: {has_digit}, Has number word: {has_number_word}")
+            
+            if has_digit or has_number_word:
+                logger.info(f"✅ Pattern 6: Short input with number element")
+                return True
+        
+        logger.info(f"❌ No pattern matched - not a clarification response")
+        return False
+    
+    def _process_clarification_response(self, user_response: str, original_query: str, suggestions: dict) -> str:
+        """
+        Use LLM to intelligently understand user's clarification intent.
+        Handles: digits, number words, entity names, natural language.
+        """
+        
+        logger.info(f"Processing clarification: '{user_response}'")
+        logger.info(f"Original query: '{original_query}'")
+        logger.info(f"Suggestions: {suggestions}")
+        
+        # Build clear mapping for LLM
+        suggestion_mapping = []
+        entity_order = list(suggestions.keys())
+        
+        for idx, (entity, options) in enumerate(suggestions.items(), 1):
+            suggestion_mapping.append(f"\n**Entity {idx}: '{entity}'**")
+            for opt_idx, option in enumerate(options, 1):
+                suggestion_mapping.append(f"  {opt_idx}. {option}")
+        
+        suggestions_text = "\n".join(suggestion_mapping)
+        
+        clarification_prompt = ChatPromptTemplate.from_template("""
+    You are resolving ambiguity in a database query.
 
+    **ORIGINAL QUERY:**
+    "{original_query}"
+
+    **AMBIGUOUS ENTITIES WITH OPTIONS:**
+    {suggestions_text}
+
+    **USER'S CLARIFICATION:**
+    "{user_response}"
+
+    **RULES FOR MAPPING:**
+
+    1. **Numbers (digits or words):** Map to option positions
+    - "2" or "two" or "second" → Option 2
+    - "2 and 1" or "second and one" → Entity 1 gets option 2, Entity 2 gets option 1
+    - "first and third" → Entity 1 gets option 1, Entity 2 gets option 3
+
+    2. **Natural Language:** Understand descriptive references
+    - "the Dubai one" → Match to option containing "DUBAI"
+    - "the 4x6 package" → Match to option containing "4x6"
+
+    3. **Multiple Entities:** Numbers/words apply in order
+    - With 2 entities, "2 and 1" means Entity 1→option 2, Entity 2→option 1
+
+    4. **Ordinal/Cardinal Equivalence:**
+    - "first" = "one" = "1"
+    - "second" = "two" = "2"
+    - "third" = "three" = "3"
+
+    **OUTPUT:**
+    Return ONLY the corrected query with exact option names substituted.
+
+    In clarification_prompt add these examples :
+ 
+    **EXAMPLES:**
+ 
+    Example 1:
+    User: "2 and 1"
+    Entity 1: Sprite [1. Zero, 2. Regular]
+    Entity 2: Customer [1. DUBAI GATE, 2. AL FATH]
+    Output: Replace with "Regular" and "DUBAI GATE"
+ 
+    Example 2:
+    User: "second and one"
+    (Same entities as above)
+    Output: Replace with "Regular" and "DUBAI GATE"
+ 
+    Example 3:
+    User: "first product and the Dubai customer"
+    Output: Replace with "Zero" and "DUBAI GATE"
+                                                               
+    Example 4:
+    User: "I meant the 4x6 package and the trading company"
+    Entity 1: Fanta [1. Orange Can, 2. Orange 4x6 NP]
+    Entity 2: Customer [1. DUBAI GATE TRADING, 2    . AL FATH]
+    Output: Replace with "Orange 4x6 NP" and "DUBAI GATE TRADING"
+                                                               
+    Example 5:
+    User: "the first one"                          
+    Entity 1: Coke [1. Diet, 2. Regular]
+    Output: Replace with "Diet"
+    Example 6:
+    User:  "1 & 2"
+    Entity 1: Sprite [1. Zero, 2. Regular]
+    Entity 2: Customer [1. DUBAI GATE, 2. AL FATH]
+    Output: Replace with "Zero" and "AL FATH"
+                                                               
+    Example 6
+    User: "2 and first"
+    Entity 1: Sprite [1. Zero, 2. Regular]
+    Entity 2: Customer [1. DUBAI GATE, 2. AL FATH]
+    Output: Replace with "Regular" and "DUBAI GATE"
+    """)
+
+        try:
+            formatted_prompt = clarification_prompt.format(
+                original_query=original_query,
+                suggestions_text=suggestions_text,
+                user_response=user_response
+            )
+
+            response = self.llm.invoke([HumanMessage(content=formatted_prompt)])
+            corrected_query = response.content.strip()
+            
+            # Clean up
+            corrected_query = re.sub(r'^```.*\n|```$', '', corrected_query, flags=re.MULTILINE).strip()
+            corrected_query = re.sub(r'^(Output:|Corrected Query:)\s*', '', corrected_query, flags=re.IGNORECASE).strip()
+            corrected_query = corrected_query.strip('"\'')
+            
+            logger.info(f"✓ LLM clarification successful: '{corrected_query}'")
+            return corrected_query
+
+        except Exception as e:
+            logger.error(f"LLM clarification failed: {e}")
+            
+            # **ENHANCED FALLBACK with word-to-number conversion**
+            number_words = {
+                'one': '1', 'first': '1',
+                'two': '2', 'second': '2',
+                'three': '3', 'third': '3',
+                'four': '4', 'fourth': '4',
+                'five': '5', 'fifth': '5'
+            }
+            
+            # Convert number words to digits
+            converted_response = user_response.lower()
+            for word, digit in number_words.items():
+                converted_response = re.sub(r'\b' + word + r'\b', digit, converted_response)
+            
+            # Extract numbers
+            numbers = re.findall(r'\d+', converted_response)
+            logger.info(f"Fallback: Converted '{user_response}' → numbers: {numbers}")
+            
+            if numbers:
+                corrected_query = original_query
+                entity_list = list(suggestions.items())
+                
+                for i, number_str in enumerate(numbers):
+                    if i >= len(entity_list):
+                        break
+                        
+                    entity, options = entity_list[i]
+                    selection_num = int(number_str) - 1
+                    
+                    if 0 <= selection_num < len(options):
+                        selected_option = options[selection_num]
+                        corrected_query = re.sub(
+                            re.escape(entity),
+                            selected_option,
+                            corrected_query,
+                            count=1,
+                            flags=re.IGNORECASE
+                        )
+                        logger.info(f"Fallback mapped: '{entity}' → '{selected_option}'")
+                
+                logger.info(f"✓ Fallback clarification: '{corrected_query}'")
+                return corrected_query
+            
+            logger.error("All clarification methods failed")
+            return original_query
+        
     def _check_clarification_needed(self, state: AgentState) -> Literal["clarify", "continue"]:
         """Check if fuzzy search requires user clarification."""
         if state["needs_clarification"]:
@@ -1008,7 +1642,12 @@ Respond with ONLY the JSON object.
     def _handle_clarification(self, state: AgentState) -> AgentState:
         """Handle the case where fuzzy search needs user clarification."""
         logger.info("Handling clarification prompt for the user.")
-        state["final_response"] = state["clarification_prompt"]
+        base_response = state["clarification_prompt"]
+        state["final_response"] = self._rephrase_message_with_llm(
+    base_response,
+    user_query=state.get("user_question", ""),
+    message_type="CLARIFICATION"
+)
         # Clear other fields as we are stopping here to wait for user input
         state["sql_query"] = ""
         state["query_result"] = pd.DataFrame()
@@ -1016,61 +1655,226 @@ Respond with ONLY the JSON object.
         state["chart_code"] = ""
         return state
 
-    def _validate_query(self, state: AgentState) -> AgentState:
-        """Validate if the query is data-related using improved guardrails."""
-        user_question = state["user_question"].strip().lower()
-        logger.info(f"Validating user query: {user_question[:50]}...")
-
-        # Check for common greetings first
-        greeting_patterns = [
-            'hi', 'hello', 'hey', 'good morning', 'good afternoon', 
-            'good evening', 'howdy', 'greetings', 'hiya', 'sup',
-            'good day', 'morning', 'afternoon', 'evening'
-        ]
+    # def _validate_query(self, state: AgentState) -> AgentState:
+    #     """Validate if the query is data-related using improved guardrails."""
+    #     user_question = state["user_question"].strip()
+    #     user_question_lower = user_question.lower()
         
-        # Simple greeting detection
-        is_greeting = (
-            user_question in greeting_patterns or
-            any(user_question.startswith(greeting) for greeting in greeting_patterns) or
-            any(greeting in user_question.split() for greeting in greeting_patterns[:5])  # Check main greetings
-        )
+    #     logger.info(f"Validating user query: {user_question[:50]}...")
         
-        if is_greeting:
-            state["is_valid_query"] = True
-            state["user_question"] = "greeting"  # Special flag for greeting handling
-            logger.info("Detected greeting - treating as valid query")
-            return state
+    #     # Check for pending clarification
+    #     pending_clarification = None
+    #     if hasattr(self, 'pending_clarification') and self.pending_clarification:
+    #         pending_clarification = self.pending_clarification
+    #     elif 'pending_clarification' in st.session_state:
+    #         pending_clarification = st.session_state['pending_clarification']
+        
+    #     if pending_clarification:
+    #         logger.info(f"Pending clarification exists: {list(pending_clarification.get('entity_suggestions', {}).keys())}")
+            
+    #         # INLINE CLARIFICATION DETECTION
+    #         is_clarification = False
+            
+    #         # Word-to-number map
+    #         number_words = {
+    #             'one': '1', 'first': '1', 'two': '2', 'second': '2',
+    #             'three': '3', 'third': '3', 'four': '4', 'fourth': '4',
+    #             'five': '5', 'fifth': '5', 'six': '6', 'sixth': '6',
+    #             'seven': '7', 'seventh': '7', 'eight': '8', 'eighth': '8',
+    #             'nine': '9', 'ninth': '9', 'ten': '10', 'tenth': '10'
+    #         }
+            
+    #         # Check 1: Single digit (1-10)
+    #         if user_question_lower.isdigit() and 1 <= int(user_question_lower) <= 10:
+    #             is_clarification = True
+    #             logger.info("✅ Clarification: Single digit")
+            
+    #         # Check 2: Single number word
+    #         elif user_question_lower in number_words:
+    #             is_clarification = True
+    #             logger.info("✅ Clarification: Number word")
+            
+    #         # Check 3: Multiple numbers (enhanced)
+    #         else:
+    #             # Step 1: Convert number words to digits
+    #             converted = user_question_lower
+    #             for word, digit in number_words.items():
+    #                 converted = re.sub(r'\b' + word + r'\b', digit, converted)
+                
+    #             # Step 2: Extract all digits (handles cases like "1&2", "and1", "2,3")
+    #             all_digits = re.findall(r'\d+', converted)
+                
+    #             logger.info(f"Clarification check: input='{user_question}', converted='{converted}', digits={all_digits}")
+                
+    #             # If we found 1+ digits and the input is short, treat as clarification
+    #             if all_digits and len(user_question) <= 30:
+    #                 is_clarification = True
+    #                 logger.info(f"✅ Clarification: Found {len(all_digits)} digit(s)")
+            
+    #         # Process if clarification detected
+    #         if is_clarification:
+    #             logger.info("✓ Processing clarification response")
+                
+    #             try:
+    #                 corrected_query = self._process_clarification_response(
+    #                     state["user_question"],
+    #                     pending_clarification["original_query"],
+    #                     pending_clarification["entity_suggestions"]
+    #                 )
+                    
+    #                 logger.info(f"Clarification resolved: '{user_question}' → '{corrected_query}'")
+                    
+    #                 state["user_question"] = corrected_query
+    #                 state["corrected_question"] = corrected_query
+    #                 state["is_valid_query"] = True
+    #                 state["is_greeting"] = False
+                    
+    #                 # Clear clarification
+    #                 self.pending_clarification = None
+    #                 if 'pending_clarification' in st.session_state:
+    #                     del st.session_state['pending_clarification']
+                    
+    #                 return state
+                    
+    #             except Exception as e:
+    #                 logger.error(f"Clarification processing failed: {e}", exc_info=True)
+    #         else:
+    #             logger.warning("Pending clarification exists but input not recognized")
+        
+    #     # ============================================================================
+    #     # NORMAL VALIDATION (GREETING, CONTEXT, LLM)
+    #     # ============================================================================
+        
+    #     # Check for greetings
+    #     greeting_patterns = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
+        
+    #     if user_question_lower in greeting_patterns or any(user_question_lower.startswith(g) for g in greeting_patterns):
+    #         state["is_greeting"] = True
+    #         state["is_valid_query"] = True
+    #         logger.info("Detected greeting")
+    #         return state
 
-        # For non-greetings, use LLM validation
-        validation_prompt = ChatPromptTemplate.from_template("""
-    {guardrails}
+    #     # **NEW: Check for chart modification requests**
+    #     chart_modification_keywords = [
+    #         'change color', 'change colour', 'make it', 'modify', 'update',
+    #         'different color', 'different colour', 'blue', 'red', 'green', 'yellow',
+    #         'larger', 'smaller', 'bigger', 'title', 'label', 'legend',
+    #         'above', 'previous', 'that chart', 'the chart', 'pie', 'bar', 'graph'
+    #     ]
+        
+    #     has_chart_keyword = any(keyword in user_question_lower for keyword in chart_modification_keywords)
+    #     has_recent_chart = False
+        
+    #     # Check if there's a recent chart in history
+    #     if st.session_state.chat_history:
+    #         for msg in reversed(st.session_state.chat_history[-3:]):
+    #             if msg.get('type') == 'bot' and msg.get('chart_code'):
+    #                 has_recent_chart = True
+    #                 break
+        
+    #     if has_chart_keyword and has_recent_chart:
+    #         logger.info("Detected chart modification request - treating as valid")
+    #         state["is_valid_query"] = True
+    #         state["is_greeting"] = False
+    #         return state
 
-    User query: "{user_question}"
+    #     # Check for contextual queries
+    #     context_indicators = ['also', 'too', 'first', 'next', 'previous', 'those', 'these']
+    #     has_context = any(ind in user_question_lower for ind in context_indicators)
+        
+    #     if has_context and len(self.query_history) > 0:
+    #         logger.info("Detected contextual query - treating as valid")
+    #         state["is_valid_query"] = True
+    #         state["is_greeting"] = False
+    #         return state
 
-    Is this query related to database/data analysis that I should help with? Answer only "YES" or "NO".
-    """)
+    #     # LLM validation
+    #     validation_prompt = ChatPromptTemplate.from_template("""
+    # {guardrails}
 
-        formatted_prompt = validation_prompt.format(
-            guardrails=GUARDRAILS_PROMPT,
-            user_question=state["user_question"]
-        )
+    # User query: "{user_question}"
 
-        response = self.llm.invoke([HumanMessage(content=formatted_prompt)])
-        is_valid = "YES" in response.content.upper()
+    # Is this related to database/data analysis? Answer only "YES" or "NO".
+    # """)
 
-        state["is_valid_query"] = is_valid
-        logger.info(f"Query validation result: {'Valid' if is_valid else 'Invalid'}")
-        return state
+    #     try:
+    #         formatted_prompt = validation_prompt.format(
+    #             guardrails=GUARDRAILS_PROMPT,
+    #             user_question=state["user_question"]
+    #         )
 
-    def _check_query_validity(self, state: AgentState) -> Literal["valid", "invalid"]:
-        """Check if query passed validation."""
-        return "valid" if state["is_valid_query"] else "invalid"
+    #         response = self.llm.invoke([HumanMessage(content=formatted_prompt)])
+    #         is_valid = "YES" in response.content.upper()
+
+    #         state["is_valid_query"] = is_valid
+    #         state["is_greeting"] = False
+    #         logger.info(f"Validation: {'Valid' if is_valid else 'Invalid'}")
+            
+    #     except Exception as e:
+    #         logger.error(f"Validation failed: {e}")
+    #         state["is_valid_query"] = True
+    #         state["is_greeting"] = False
+        
+    #     return state
+
+    # def _check_query_validity(self, state: AgentState) -> Literal["greeting", "valid", "invalid"]:
+    #     """NEW: Check if the query is a greeting, valid data query, or invalid."""
+    #     if state.get("is_greeting"):
+    #         return "greeting"
+    #     return "valid" if state["is_valid_query"] else "invalid"
+    
+    def _is_clarification_response(self, user_input: str) -> bool:
+        """Check if user input is a clarification response."""
+        user_input_lower = user_input.lower().strip()
+        
+        # Check for numbered responses
+        if user_input_lower.isdigit() and int(user_input_lower) <= 5:
+            return True
+            
+        # Check for confirmation words
+        confirmation_words = ['yes', 'correct', 'right', 'exactly', 'that one', 'first one', 'second one', 'third one']
+        if any(word in user_input_lower for word in confirmation_words):
+            return True
+            
+        # Check if the input contains "i meant" or similar clarification phrases
+        clarification_phrases = ['i meant', 'i want', 'i choose', 'select', 'pick']
+        if any(phrase in user_input_lower for phrase in clarification_phrases):
+            return True
+            
+        return False
 
     def _handle_invalid_query(self, state: AgentState) -> AgentState:
-        """Handle non-data related queries with witty response."""
-        logger.info("Handling invalid query with witty response")
+        """Handle invalid queries with context-aware LLM response."""
+        user_query = state["user_question"]
+        logger.info(f"Handling invalid query with personalization: {user_query[:50]}")
         
-        state["final_response"] = self.response_manager.get_error_message('invalid_query')
+        base_response = self.response_manager.get_error_message('invalid_query')
+        state["final_response"] = self._rephrase_message_with_llm(
+            base_response,
+            user_query=user_query,
+            message_type="INVALID_QUERY"
+        )
+        
+        state["sql_query"] = ""
+        state["query_result"] = pd.DataFrame()
+        state["follow_up_questions"] = []
+        state["chart_code"] = ""
+        state["best_chart_type"] = ""
+        state["visualization_suggestion"] = ""
+        return state
+        
+    def _handle_greeting(self, state: AgentState) -> AgentState:
+        """Handle greetings with LLM-generated personalized response."""
+        user_query = state["user_question"]
+        logger.info(f"Handling greeting with personalization: {user_query}")
+        
+        base_response = self.response_manager.get_greeting_response()
+        state["final_response"] = self._rephrase_message_with_llm(
+            base_response, 
+            user_query=user_query,
+            message_type="GREETING_ONLY"
+        )
+        
         state["sql_query"] = ""
         state["query_result"] = pd.DataFrame()
         state["follow_up_questions"] = []
@@ -1080,88 +1884,228 @@ Respond with ONLY the JSON object.
         return state
 
     def _analyze_query(self, state: AgentState) -> AgentState:
-        """Analyze query with intelligent context awareness."""
+        """Analyze query with intelligent LLM-based context awareness."""
         user_question = state["user_question"]
         logger.info(f"Analyzing query for context: {user_question[:50]}...")
 
-        # Update conversation context from the agent's state
         state["conversation_context"] = self.conversation_context
         state["previous_queries"] = self.query_history[-3:] if self.query_history else []
 
-        # Intelligent context detection using LLM
-        needs_context = False
+        # **FIX: Quick pattern matching for obvious contextual queries**
+        contextual_patterns = [
+            r'\b(also|too)\b.*\b(show|display|get|fetch)',
+            r'\b(first|next|previous|last)\s+\d+',
+            r'\b(those|these|that|this|same)\b',
+            r'\b(change|modify|update|adjust)\b.*(color|colour|chart|graph)',
+        ]
         
-        # ALWAYS run the context detection prompt, even for the first message.
+        is_likely_contextual = any(
+            re.search(pattern, user_question.lower()) 
+            for pattern in contextual_patterns
+        )
+        
+        if is_likely_contextual and self.query_history:
+            logger.info("Quick pattern match: Query is contextual")
+            if "conversation_context" not in state:
+                state["conversation_context"] = {}
+            state["conversation_context"]["needs_context"] = True
+            state["conversation_context"]["context_type"] = "continuation"
+            state["conversation_context"]["reasoning"] = "Contains contextual keywords and follows previous query"
+            return state
+
         context_detection_prompt = ChatPromptTemplate.from_template("""
-You are analyzing whether a new user query requires context from previous queries in a database chat session.
+    You are an expert at understanding conversational context in data analytics queries.
 
-Previous Context:
-- Last entity referenced: {last_entity}
-- Last table used: {last_table}
-- Last filter conditions: {last_conditions}
-- Previous SQL queries: {previous_queries}
+    CONVERSATION HISTORY:
+    Previous SQL Queries: {previous_queries}
+    Last Entity Referenced: {last_entity}
+    Last Table Used: {last_table}
+    Last Filters: {last_conditions}
 
-Current User Query: "{current_query}"
+    CURRENT USER QUERY: "{current_query}"
 
-Does this current query need context from the previous queries to be answered correctly?
+    Analyze whether this query is:
+    1. **INDEPENDENT** - A standalone question that doesn't need previous context
+    2. **CONTEXTUAL** - Refers to or builds upon previous conversation
 
-Consider these scenarios:
-1. If the query uses pronouns like "this", "that", "it", "them" referring to previous entities - NEEDS CONTEXT
-2. If the query asks for "more", "next", "continue", "show additional" - NEEDS CONTEXT  
-3. If the query mentions "same customer", "same product", "that item" - NEEDS CONTEXT
-4. If the query is asking for comparison with "previous results" - NEEDS CONTEXT
-5. If the query is completely independent and can be answered without previous context - NO CONTEXT
-6. If the query is asking about completely different entities or topics - NO CONTEXT
+    CONTEXTUAL queries (NEEDS CONTEXT = true):
+    - Contains words like: "also", "too", "as well", "first", "next", "previous", "more"
+    - Uses pronouns: "that", "those", "this", "these", "them", "it", "same"
+    - Continuation: "show more", "next results", "continue"
+    - Modifications: "change color", "make it bigger", "update the chart"
+    - Incomplete references: "first 5" (without saying "first 5 of what")
 
-Answer only "YES" if context is needed, or "NO" if the query is independent.
-""")
+    INDEPENDENT queries (NEEDS CONTEXT = false):
+    - Complete questions with all entities specified
+    - Fresh topics unrelated to history
+    - Explicit comparisons: "Q1 vs Q2", "product A vs product B"
+
+    Respond in JSON format:
+    {{
+        "needs_context": true/false,
+        "reasoning": "Brief explanation",
+        "context_type": "none/continuation/reference/drill_down/modification"
+    }}
+    """)
 
         try:
-            # Use .get() with defaults to handle empty context gracefully
             formatted_prompt = context_detection_prompt.format(
+                previous_queries='; '.join(self.query_history[-2:]) if self.query_history else 'None',
                 last_entity=self.conversation_context.get('last_entity', 'None'),
                 last_table=self.conversation_context.get('last_table', 'None'),
                 last_conditions=self.conversation_context.get('last_conditions', 'None'),
-                previous_queries='; '.join(self.query_history[-2:]) if self.query_history else 'None',
                 current_query=user_question
             )
 
             response = self.llm.invoke([HumanMessage(content=formatted_prompt)])
-            needs_context = "YES" in response.content.upper()
-            logger.info(f"LLM-based context detection result: {'Needs context' if needs_context else 'Independent query'}")
+            
+            json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
+            if json_match:
+                context_analysis = json.loads(json_match.group())
+                needs_context = context_analysis.get('needs_context', False)
+                
+                logger.info(f"Context analysis: {context_analysis.get('reasoning', 'No reasoning')}")
+                
+                if "conversation_context" not in state or not isinstance(state["conversation_context"], dict):
+                    state["conversation_context"] = {}
+                
+                state["conversation_context"]["needs_context"] = needs_context
+                state["conversation_context"]["context_type"] = context_analysis.get('context_type', 'none')
+                state["conversation_context"]["reasoning"] = context_analysis.get('reasoning', '')
+            else:
+                logger.warning("Failed to parse JSON from context detection - defaulting to contextual")
+                state["conversation_context"]["needs_context"] = is_likely_contextual
 
         except Exception as e:
-            logger.error(f"Context detection with LLM failed: {e}")
-            # Fallback to simple keyword detection, which is crucial for this error case
-            context_keywords = ["previous", "that", "this", "it", "them", "more", "next", "continue", "same"]
-            needs_context = any(keyword in user_question.lower().split() for keyword in context_keywords)
-            logger.warning(f"Falling back to keyword-based context detection. Result: {'Needs context' if needs_context else 'Independent query'}")
+            logger.error(f"Context detection failed: {e} - using pattern matching")
+            state["conversation_context"]["needs_context"] = is_likely_contextual
 
-        # Ensure conversation_context exists in the state before updating
-        if "conversation_context" not in state or not isinstance(state["conversation_context"], dict):
-            state["conversation_context"] = {}
+        return state
+    
+    def _extract_intent(self, state: AgentState) -> AgentState:
+        """
+        Uses an LLM to distill the core user intent from a potentially conversational query.
+        """
+        user_question = state.get("corrected_question") or state["user_question"]
+        logger.info(f"Extracting core intent from query: {user_question[:100]}...")
+
+        # If the query is already short and direct, no need to process it.
+        if len(user_question.split()) < 8:
+            logger.info("Query is short and direct. Using as is.")
+            state["user_intent"] = user_question
+            return state
+
+        intent_prompt = ChatPromptTemplate.from_template("""
+You are an expert at understanding user requests. Your task is to extract the core, direct command from the user's potentially conversational question.
+
+Convert the user's question into a concise, direct instruction for a data analyst.
+
+**Examples:**
+- User Question: "Would you like to visualize this with a bar chart showing the total sales volume for Sprite Zero across different order sources?"
+- Your Output: "Show total sales volume for Sprite Zero by order source"
+
+- User Question: "Can we create a line chart showing the monthly trend of orders for Fanta Orange year-to-date?"
+- Your Output: "Show the monthly trend of orders for Fanta Orange year-to-date"
             
-        state["conversation_context"]["needs_context"] = needs_context
+- User Question: "How many orders have been placed for Fanta Orange 1.49L?"
+- Your Output: "How many orders have been placed for Fanta Orange 1.49L?"
+
+**User Question:**
+"{user_question}"
+
+**Direct Command:**
+""")
+        
+        try:
+            formatted_prompt = intent_prompt.format(user_question=user_question)
+            response = self.llm.invoke([HumanMessage(content=formatted_prompt)])
+            intent = response.content.strip()
+            
+            # Clean up potential markdown or prefixes
+            if intent.lower().startswith("direct command:"):
+                intent = intent[15:].strip()
+            
+            logger.info(f"Successfully extracted intent: {intent}")
+            state["user_intent"] = intent
+        except Exception as e:
+            logger.error(f"Failed to extract intent: {e}. Using original query.")
+            state["user_intent"] = user_question
+            
+        return state
+    
+    def _resolve_clarification(self, state: AgentState) -> AgentState:
+        """
+        Orchestrates the resolution of a clarification by calling the processing helper
+        and updating the agent state with the corrected query.
+        """
+        logger.info("Resolving user's clarification response using the corrected query.")
+        user_response = state["user_question"]
+        
+        # Retrieve the pending clarification context from the session
+        pending_context = self.pending_clarification or st.session_state.get('pending_clarification')
+        
+        if not pending_context:
+            logger.error("Attempted to resolve clarification, but no pending context was found.")
+            # Fallback in case context is lost
+            state["final_response"] = "I'm sorry, I seem to have lost the context for that clarification. Could you please ask your original question again?"
+            state["error_message"] = "No pending clarification context."
+            return state
+
+        # *** Use the EXISTING helper function to get the corrected query ***
+        corrected_query = self._process_clarification_response(
+            user_response,
+            pending_context["original_query"],
+            pending_context["entity_suggestions"]
+        )
+        
+        logger.info(f"Clarification resolved. New query to process: '{corrected_query}'")
+        
+        # Update the state to reflect the resolution
+        state["user_question"] = corrected_query
+        state["corrected_question"] = corrected_query
+        state["needs_clarification"] = False  # Mark clarification as handled
+        
+        # CRITICAL: Clear the pending clarification state to exit the loop
+        self.pending_clarification = None
+        if 'pending_clarification' in st.session_state:
+            del st.session_state['pending_clarification']
+            
         return state
 
     def _generate_sql(self, state: AgentState) -> AgentState:
         """Generate SQL with intelligent context awareness for Azure Synapse."""
-        user_question = state["corrected_question"]
+        user_question = state["user_intent"]
         current_date = datetime.now().strftime('%Y-%m-%d')
         context = state.get("conversation_context", {})
         previous_queries = state.get("previous_queries", [])
 
         logger.info(f"Generating SQL for: {user_question[:50]}...")
 
-        # Check if context is needed but not available
+        # **NEW: Check if this is a chart modification request**
+        chart_keywords = ['change color', 'change colour', 'make it', 'modify chart', 
+                        'update chart', 'different color', 'different colour']
+        is_chart_mod = any(keyword in user_question.lower() for keyword in chart_keywords)
+        
+        # Check for recent chart
+        has_recent_chart = False
+        if st.session_state.chat_history:
+            for msg in reversed(st.session_state.chat_history[-3:]):
+                if msg.get('type') == 'bot' and msg.get('chart_code'):
+                    has_recent_chart = True
+                    break
+        
+        if is_chart_mod and has_recent_chart and previous_queries:
+            # Reuse the last SQL query for chart modification
+            state["sql_query"] = previous_queries[-1]
+            logger.info("Chart modification detected - reusing last SQL query")
+            return state
+
         if context.get("needs_context", False) and not previous_queries:
-            # Handle the case where context is needed but no previous context exists
             state["sql_query"] = "NO_CONTEXT_ERROR"
             state["error_message"] = "No previous query context available. Please provide a specific query first."
             logger.warning("Context needed but no previous queries available. Setting NO_CONTEXT_ERROR.")
             return state
         
-        # Build context-aware prompt only if context is actually needed AND available
         context_info = ""
         if context.get("needs_context", False) and previous_queries:
             context_info = f"""
@@ -1171,43 +2115,39 @@ Answer only "YES" if context is needed, or "NO" if the query is independent.
     - Last filter conditions: {context.get('last_conditions', 'None')}
     - Previous SQL queries: {'; '.join(previous_queries[-2:])}
 
-    When user says "next", "more", or "continue", use OFFSET based on previous results.
-    When user refers to "that" or "this", use the entity from the previous context.
-    When user asks for comparisons with previous results, maintain the same filters.
+    **CONTEXT USAGE RULES:**
+    - If user says "also show first 5" or "first 5 too", use same CustomerName/ProductName from previous query
+    - If user says "also", "too", or "as well", maintain same entity filters
+    - For "first" vs "last", only change ORDER BY direction (ASC vs DESC)
+    - Keep all WHERE conditions from previous query unless explicitly changed
     """
         else:
-            context_info = """
-    This is an independent query that should be answered without reference to previous context.
-    Generate a complete SQL query based solely on the current user question.
-    If the user is asking for something that requires previous context (like "previous query", "that result", etc.) 
-    but no context is available, return an error message instead of generating a generic query.
-    """
+            context_info = "This is an independent query that should be answered without reference to previous context."
 
-        sql_prompt = ChatPromptTemplate.from_template(
-            """You are an expert Azure Synapse SQL query generator with intelligent context awareness.
+        sql_prompt = ChatPromptTemplate.from_template("""
+    You are a Text-to-SQL code generator for Azure Synapse.
 
-{examples}
+    **CRITICAL RULES:**
+    1. **OUTPUT FORMAT:** Return ONLY the SQL query. No markdown, no explanations.
+    2. **SYNTAX:** Use Azure Synapse (SQL Server) syntax. Use `TOP` instead of `LIMIT`. Use `GETDATE()` for current date.
+    3. **SCHEMA:** Always use `dbo.` schema prefix (e.g., `dbo.sales_data`).
+    4. **CHART REQUESTS:** If user asks for visualization (chart, graph, plot), generate SQL to fetch the necessary data. Do NOT return INVALID.
+    5. **CONTEXTUAL QUERIES:** Pay attention to context. If user says "also show first 5" after a query about a customer, use that same customer.
 
-Current Database Schema:
-{schema}
+    **Database Schema:**
+    {schema}
 
-{context_info}
+    {examples}
 
-Current date: {current_date}
+    **Context for this Query:**
+    {context_info}
 
-IMPORTANT: 
-- Use SQL Server/Azure Synapse syntax
-- Use TOP instead of LIMIT
-- Use GETDATE() instead of CURDATE()
-- Always use schema prefix: dbo.table_name
-- Only use context information if explicitly indicated above
-- Ensure data type compatibility in all operations
-- If the user asks for a visualization (chart, plot, graph), select columns appropriate for that visualization. For trends, select time-series data; for distributions, select categorical and numerical data.
-- Never mix incompatible data types in UNION operations
-- Return ONLY the SQL query, no explanations
+    **Current date:** {current_date}
 
-Generate an Azure Synapse SQL query for: {user_question}"""
-        )
+    Generate Azure Synapse SQL query for: "{user_question}"
+
+    Remember: For chart/visualization requests, return SQL that fetches the data needed for the chart.
+    """)
 
         try:
             formatted_prompt = sql_prompt.format(
@@ -1221,20 +2161,19 @@ Generate an Azure Synapse SQL query for: {user_question}"""
             response = self.llm.invoke([HumanMessage(content=formatted_prompt)])
             sql_query = response.content.strip()
 
-            # Clean up the SQL query
+            # Clean up markdown
             sql_query = re.sub(r'^```sql\n?', '', sql_query)
             sql_query = re.sub(r'\n?```$', '', sql_query)
             sql_query = sql_query.strip()
 
-            # Update context only if this was a contextual query or if it establishes new context
+            if sql_query.upper() == "INVALID":
+                raise ValueError("LLM determined the request is not a valid SQL query.")
+
             if context.get("needs_context", False) or self._establishes_new_context(sql_query):
                 self._update_context_from_sql(sql_query)
 
             state["sql_query"] = sql_query
-
-            # Add to query history
             self.query_history.append(sql_query)
-
             logger.info(f"SQL generated successfully: {sql_query[:100]}...")
 
         except Exception as e:
@@ -1246,13 +2185,12 @@ Generate an Azure Synapse SQL query for: {user_question}"""
 
     def _establishes_new_context(self, sql_query: str) -> bool:
         """Check if the SQL query establishes new context for future queries."""
-        # Check if query has specific filters or references that could be useful for context
         context_indicators = [
-            r"WHERE.*=.*'[^']+'",  # Specific string filters
-            r"WHERE.*LIKE.*'%.*%'",  # Pattern searches
-            r"ProductName\s*=",  # Product-specific queries
-            r"CustomerName\s*=",  # Customer-specific queries
-            r"TOP\s+\d+",  # Pagination queries
+            r"WHERE.*=.*'[^']+'",
+            r"WHERE.*LIKE.*'%.*%'",
+            r"ProductName\s*=",
+            r"CustomerName\s*=",
+            r"TOP\s+\d+",
         ]
 
         for pattern in context_indicators:
@@ -1265,25 +2203,21 @@ Generate an Azure Synapse SQL query for: {user_question}"""
         """Extract and update conversation context from SQL query."""
         logger.debug("Updating conversation context from SQL query")
 
-        # Extract table names
         table_pattern = r'FROM\s+(?:dbo\.)?(\w+)'
         tables = re.findall(table_pattern, sql_query, re.IGNORECASE)
         if tables:
             self.conversation_context['last_table'] = tables[0]
 
-        # Extract entity references
         entity_pattern = r"'([^']+)'"
         entities = re.findall(entity_pattern, sql_query)
         if entities:
             self.conversation_context['last_entity'] = entities[0]
 
-        # Extract conditions
         where_pattern = r'WHERE\s+(.+?)(?:GROUP|ORDER|OFFSET|$)'
         conditions = re.findall(where_pattern, sql_query, re.IGNORECASE | re.DOTALL)
         if conditions:
             self.conversation_context['last_conditions'] = conditions[0].strip()
 
-        # Track pagination for Azure Synapse
         if "TOP" in sql_query.upper():
             top_pattern = r'TOP\s+(\d+)'
             tops = re.findall(top_pattern, sql_query, re.IGNORECASE)
@@ -1315,7 +2249,6 @@ Generate an Azure Synapse SQL query for: {user_question}"""
             result_df = self.db_manager.execute_query(state["sql_query"])
             state["query_result"] = result_df
 
-            # Update context with result count
             self.conversation_context['last_result_count'] = len(result_df)
 
             state["error_message"] = ""
@@ -1333,75 +2266,46 @@ Generate an Azure Synapse SQL query for: {user_question}"""
         return "success" if not state.get("error_message") else "error"
 
     def _generate_response(self, state: AgentState) -> AgentState:
-        """Generate intelligent response with witty personality."""
+        """Generate intelligent response with LLM-based insights."""
         query_result = state["query_result"]
         user_question = state["user_question"]
+        sql_query = state.get("sql_query", "")
 
-        logger.info("Generating response")
+        logger.info("Generating response with LLM insights")
 
-        # Handle greetings specially
-        if user_question == "greeting":
-            greeting_responses = [
-                "Hi! I'm DataBot, your friendly data assistant. I specialize in analyzing your data and turning your questions into insights. What would you like to explore today?",
-                "Hello there! DataBot here - ready to dive into your data and uncover some interesting insights. Ask me anything about your sales, customers, products, or any other data you'd like to analyze!",
-                "Good to meet you! I'm DataBot, your AI-powered analytics companion. I can help you query your database, generate charts, and discover valuable business insights. What data mystery shall we solve together?",
-                "Hi! I'm DataBot - think of me as your personal data detective. I love turning complex queries into simple answers and transforming raw data into actionable insights. How can I help you today?"
-            ]
-            
-            import random
-            state["final_response"] = random.choice(greeting_responses)
-            state["sql_query"] = ""
-            state["query_result"] = pd.DataFrame()
-            state["follow_up_questions"] = [
-                "What sales data would you like to explore?",
-                "Would you like to see customer analytics?",
-                "Can I help you with product performance metrics?"
-            ]
-            state["chart_code"] = ""
-            state["best_chart_type"] = ""
-            state["visualization_suggestion"] = ""
-            return state
-
-        # Rest of the existing _generate_response method for data queries...
         if query_result.empty:
-            # Detect date-based queries for appropriate empty response
-            date_keywords = ["today", "yesterday", "last", "this", "month", "year", "week", "day", "date", "ytd", "quarter"]
+            date_keywords = ["today", "yesterday", "last", "this", "month", "year", "week", "day", "date", "ytd", "quarter", "mtd"]
             is_date_query = any(keyword in user_question.lower() for keyword in date_keywords)
             
-            response = self.response_manager.get_empty_message(is_date_query)
-            state["final_response"] = response
-            logger.info("Generated witty response for empty result set")
+            base_response = self.response_manager.get_empty_message(is_date_query)
+            state["final_response"] = self._rephrase_message_with_llm(
+    base_response,
+    user_query=user_question,
+    message_type="SUCCESS"
+)
         else:
             try:
-                # Generate witty success message
                 response_parts = []
                 success_msg = self.response_manager.get_success_message(len(query_result))
                 response_parts.append(success_msg)
                 
-                # Generate business insights
-                insights = self._generate_automated_insights(query_result, user_question)
+                # Generate LLM-based insights
+                insights = self._generate_automated_insights_llm(query_result, user_question, sql_query)
                 if insights:
                     response_parts.append("\n\n**Business Intelligence Summary:**")
                     response_parts.extend([f"\n{insight}" for insight in insights])
-                    
-                    # Add strategic recommendation if applicable
-                    if len(query_result) > 50:
-                        response_parts.append(f"\n\n**Recommendation**: With {len(query_result)} data points analyzed, consider drilling down into specific segments for more targeted insights.")
-
-                # Professional data summary
+                
                 if len(query_result) > 20:
-                    response_parts.append(f"\n\n*Displaying top 20 records from {len(query_result):,} total results. Full dataset available for download.*")
+                    response_parts.append(f"\n\n*Displaying top 20 records from {len(query_result):,} total results.*")
                 
-                final_response = "".join(response_parts)
-                
-                # Add personality touch
-                final_response = self.response_manager.add_personality_touch(
-                    final_response, 
+                base_response = "".join(response_parts)
+                base_response = self.response_manager.add_personality_touch(
+                    base_response, 
                     {"result_count": len(query_result), "query": user_question}
                 )
                 
-                state["final_response"] = final_response
-                logger.info(f"Generated witty response with insights for {len(query_result)} records")
+                state["final_response"] = self._rephrase_message_with_llm(base_response)
+                logger.info(f"Generated response with LLM insights for {len(query_result)} records")
 
             except Exception as e:
                 logger.error(f"Response generation failed: {e}")
@@ -1409,6 +2313,201 @@ Generate an Azure Synapse SQL query for: {user_question}"""
 
         return state
     
+    def _detect_chart_modification_request(self, state: AgentState) -> Literal["modify_chart", "generate_sql"]:
+        """Detect if user wants to modify an existing chart."""
+        user_question = state["user_question"].lower()
+        
+        # Check if there's a recent chart in history
+        has_recent_chart = False
+        if st.session_state.chat_history:
+            for msg in reversed(st.session_state.chat_history[-3:]):
+                if msg.get('type') == 'bot' and msg.get('chart_code'):
+                    has_recent_chart = True
+                    break
+        
+        if not has_recent_chart:
+            return "generate_sql"
+        
+        # Chart modification keywords
+        modification_keywords = [
+            "change color", "change colour", "make it", "modify", "update", "adjust",
+            "different color", "blue", "red", "green", "larger", "smaller",
+            "title", "label", "legend", "size", "width", "height"
+        ]
+        
+        if any(keyword in user_question for keyword in modification_keywords):
+            logger.info("Detected chart modification request")
+            return "modify_chart"
+        
+        return "generate_sql"
+
+    def _modify_existing_chart(self, state: AgentState) -> AgentState:
+        """Modify existing chart based on user request using LLM."""
+        user_request = state["user_question"]
+        
+        # Get the last chart code from history
+        last_chart_code = ""
+        last_dataframe = pd.DataFrame()
+        last_query = ""
+        
+        for msg in reversed(st.session_state.chat_history):
+            if msg.get('type') == 'bot' and msg.get('chart_code'):
+                last_chart_code = msg['chart_code']
+                last_dataframe = msg.get('dataframe', pd.DataFrame())
+                last_query = msg.get('sql_query', '')
+                break
+        
+        if not last_chart_code:
+            state["error_message"] = "No recent chart found to modify"
+            return state
+        
+        modification_prompt = ChatPromptTemplate.from_template("""
+    You are a Python visualization expert. Modify the existing chart code based on the user's request.
+
+    EXISTING CHART CODE:
+    ```python
+    {existing_code}
+    USER'S MODIFICATION REQUEST: "{user_request}"
+    RULES:
+
+    Keep the same data and chart structure
+    Only modify styling elements requested by user (colors, sizes, labels, etc.)
+    Maintain all variable names and data processing logic
+    Ensure fig variable is still created for display
+    Return ONLY the complete modified Python code in a code block
+
+    COMMON MODIFICATIONS:
+
+    Colors: Update color parameters in plotting functions
+    Size: Change figsize in plt.subplots() or figure()
+    Labels: Modify xlabel, ylabel, title
+    Legend: Adjust legend() parameters
+    Grid: Add/modify grid settings
+
+    Return only the Python code block, no explanations.
+    """)
+        try:
+            formatted_prompt = modification_prompt.format(
+                existing_code=last_chart_code,
+                user_request=user_request
+            )
+
+            response = self.llm.invoke([HumanMessage(content=formatted_prompt)])
+            modified_code = self._extract_code_from_response(response.content)
+
+            state["chart_code"] = modified_code
+            state["query_result"] = last_dataframe
+            state["sql_query"] = last_query
+            state["final_response"] = f"I've modified the chart based on your request: '{user_request}'. Here's the updated visualization!"
+            
+            logger.info(f"Chart modified successfully based on: {user_request}")
+
+        except Exception as e:
+            logger.error(f"Chart modification failed: {e}")
+            state["error_message"] = f"Failed to modify chart: {str(e)}"
+            state["chart_code"] = last_chart_code  # Fallback to original
+
+        return state
+    
+    def _generate_automated_insights_llm(self, df: pd.DataFrame, user_question: str, sql_query: str) -> List[str]:
+        """Generate professional business insights using LLM."""
+        
+        if df.empty:
+            return []
+        
+        # Prepare data summary
+        summary_stats = {}
+        for col in df.select_dtypes(include=[np.number]).columns[:5]:
+            if df[col].notna().sum() > 0:
+                summary_stats[col] = {
+                    'mean': float(df[col].mean()),
+                    'sum': float(df[col].sum()),
+                    'max': float(df[col].max()),
+                    'min': float(df[col].min()),
+                    'count': int(df[col].count())
+                }
+        
+        # **FIX: Handle categorical summary with date serialization**
+        categorical_summary = {}
+        for col in df.select_dtypes(include=['object', 'string']).columns[:3]:
+            if df[col].notna().sum() > 0:
+                value_counts = df[col].value_counts().head(5)
+                # Convert to regular Python types to avoid serialization issues
+                categorical_summary[col] = {
+                    'unique_count': int(df[col].nunique()),
+                    'top_values': {str(k): int(v) for k, v in value_counts.items()}
+                }
+        
+        # **FIX: Handle date columns separately**
+        date_summary = {}
+        date_cols = df.select_dtypes(include=['datetime64', 'datetime']).columns
+        if len(date_cols) > 0:
+            for col in date_cols[:2]:
+                if df[col].notna().sum() > 0:
+                    date_summary[col] = {
+                        'min_date': df[col].min().strftime('%Y-%m-%d'),
+                        'max_date': df[col].max().strftime('%Y-%m-%d'),
+                        'range_days': (df[col].max() - df[col].min()).days
+                    }
+        
+        insight_prompt = ChatPromptTemplate.from_template("""
+    You are a senior business analyst providing insights from data analysis.
+
+    USER'S QUESTION: "{user_question}"
+    SQL QUERY EXECUTED: "{sql_query}"
+
+    DATA ANALYSIS:
+    - Total Records: {row_count}
+    - Columns: {columns}
+    - Numeric Statistics: {summary_stats}
+    - Categorical Summary: {categorical_summary}
+    - Date Range: {date_summary}
+
+    BUSINESS CONTEXT:
+    {mapping_context}
+
+    Generate 3-4 professional, actionable business insights that:
+    1. Directly answer the user's question
+    2. Highlight key patterns, trends, or outliers
+    3. Provide business context with specific numbers
+    4. Are concise (1-2 sentences each)
+
+    Format each insight as: • [Insight text]
+
+    EXAMPLES:
+    - Revenue Analysis: Total sales of $1.2M with top product accounting for 35% ($420K)
+    - Customer Concentration: Top 3 customers represent 45% of orders
+    - Time Range: Data spans 180 days from Jan 2024 to June 2024
+    """)
+
+        try:
+            formatted_prompt = insight_prompt.format(
+                user_question=user_question,
+                sql_query=sql_query[:300],
+                row_count=len(df),
+                columns=', '.join(df.columns.tolist()),
+                summary_stats=json.dumps(summary_stats, indent=2) if summary_stats else 'No numeric data',
+                categorical_summary=json.dumps(categorical_summary, indent=2) if categorical_summary else 'No categorical data',
+                date_summary=json.dumps(date_summary, indent=2) if date_summary else 'No date information',
+                mapping_context=MAPPING_SCHEMA_PROMPT[:400]
+            )
+
+            response = self.llm.invoke([HumanMessage(content=formatted_prompt)])
+            insights_text = response.content.strip()
+            
+            insights = [
+                line.strip() 
+                for line in insights_text.split('\n') 
+                if line.strip().startswith('•')
+            ]
+            
+            logger.info(f"Generated {len(insights)} LLM insights")
+            return insights[:4]
+
+        except Exception as e:
+            logger.error(f"LLM insight generation failed: {e}")
+            return [f"• Dataset analyzed: {len(df):,} records across {len(df.columns)} business metrics"]
+
     def _generate_automated_insights(self, df: pd.DataFrame, user_question: str) -> List[str]:
         """Generate professional business insights from dataframe."""
         insights = []
@@ -1698,6 +2797,59 @@ Example good suggestion:PIE CHART-1. "Would you like to see a pie chart showing 
         user_question = state["user_question"]
         df = state["query_result"]
         columns = df.columns.tolist()
+
+        # **Check if this is a chart modification request**
+        modification_keywords = ['change color', 'change colour', 'make', 'modify', 'update', 
+                                'different color', 'yellow', 'red', 'green', 'blue']
+        is_modification = any(keyword in user_question.lower() for keyword in modification_keywords)
+        
+        # Get the last chart code if this is a modification
+        last_chart_code = ""
+        if is_modification and st.session_state.chat_history:
+            for msg in reversed(st.session_state.chat_history):
+                if msg.get('type') == 'bot' and msg.get('chart_code'):
+                    last_chart_code = msg['chart_code']
+                    break
+        
+        if is_modification and last_chart_code:
+            logger.info(f"Modifying existing chart based on: {user_question[:50]}...")
+            
+            modification_prompt = ChatPromptTemplate.from_template("""
+    You are modifying an existing chart based on a user request.
+
+    **EXISTING CHART CODE:**
+    ```python
+    {existing_code}
+    USER'S MODIFICATION REQUEST: "{user_request}"
+    TASK: Modify ONLY the styling elements requested by the user. Keep all data processing and structure intact.
+    Common modifications:
+
+    Colors: Update colors= parameter in plotting functions
+    Size: Change figsize= in plt.subplots() or plt.figure()
+    Labels: Modify xlabel(), ylabel(), title() calls
+    Legend: Adjust legend() parameters
+
+    Return ONLY the complete modified Python code. No explanations.
+    """)
+        try:
+            formatted_prompt = modification_prompt.format(
+                existing_code=last_chart_code,
+                user_request=user_question
+            )
+
+            response = self.llm.invoke([HumanMessage(content=formatted_prompt)])
+            modified_code = self._extract_code_from_response(response.content)
+
+            state["chart_code"] = modified_code
+            state["final_response"] = f"I've updated the chart colors as requested! Here's your modified visualization."
+            
+            logger.info(f"Chart modified successfully")
+            return state
+
+        except Exception as e:
+            logger.error(f"Chart modification failed: {e}")
+            # Fall through to normal chart generation
+
         
         # Use the recommended chart type if available, otherwise let LLM decide
         recommended_chart_type = state.get("best_chart_type", "")
@@ -1730,6 +2882,7 @@ DATA CONTEXT:
 {info_str}
 - For your reference, here is a description of some dataset columns:
 {mapping_prompt}
+
 
 STRICT GUIDELINES:
 1.  ALLOWED CHARTS: You can ONLY generate: PIE CHART, BOX PLOT, HISTOGRAM, BAR CHART, or LINE CHART. Choose the best one to answer the user's question.
@@ -1777,7 +2930,6 @@ The User query was : Is there a seasonal trend in order volumes for 'Fanta Straw
 - Do NOT use plt.bar() for time series data
 - Let matplotlib handle date formatting automatically on x-axis
 
-
     ---Pie Chart Code Example---
     ```
     import pandas as pd
@@ -1799,128 +2951,123 @@ The User query was : Is there a seasonal trend in order volumes for 'Fanta Straw
         autotext.set_fontweight('bold')
     plt.tight_layout()
     plt.show()
-   ```
-    
+    ```
     ---Box Plot Code Example---
-    ```
-    import pandas as pd
-    import matplotlib.pyplot as plt
-    plt.figure(figsize=(12, 8))
-    education_order = ['High School', 'Bachelor', 'Master', 'PhD']
-    box_data = [df[df['education'] == edu]['income'] for edu in education_order]
-    box_plot = plt.boxplot(box_data, labels=education_order, patch_artist=True)
+```
+import pandas as pd
+import matplotlib.pyplot as plt
+plt.figure(figsize=(12, 8))
+education_order = ['High School', 'Bachelor', 'Master', 'PhD']
+box_data = [df[df['education'] == edu]['income'] for edu in education_order]
+box_plot = plt.boxplot(box_data, labels=education_order, patch_artist=True)
 
-    # Color the boxes
-    colors_box = ['lightblue', 'lightgreen', 'lightcoral', 'lightyellow']
-    for patch, color in zip(box_plot['boxes'], colors_box):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.8)
+# Color the boxes
+colors_box = ['lightblue', 'lightgreen', 'lightcoral', 'lightyellow']
+for patch, color in zip(box_plot['boxes'], colors_box):
+    patch.set_facecolor(color)
+    patch.set_alpha(0.8)
 
-    plt.title('Income Distribution by Education Level', fontsize=16, fontweight='bold')
-    plt.ylabel('Income ($)', fontsize=12)
-    plt.xlabel('Education Level', fontsize=12)
-    plt.xticks(rotation=0)
-    plt.grid(True, alpha=0.3)
-    # Format y-axis to show values in thousands
-    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${{x/1000:.0f}}K'))
-    plt.tight_layout()
-    plt.show()
-    ```    
-    
-    ---Bar Chart Code Example---
-    ```
-    import pandas as pd
-    import matplotlib.pyplot as plt
-    plt.figure(figsize=(12, 8))
-    avg_satisfaction = df.groupby('department')['satisfaction_score'].mean().sort_values(ascending=False)
-    bars = plt.bar(avg_satisfaction.index, avg_satisfaction.values, 
-                color=['#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'],
-                alpha=0.8, edgecolor='black', linewidth=1)
+plt.title('Income Distribution by Education Level', fontsize=16, fontweight='bold')
+plt.ylabel('Income ($)', fontsize=12)
+plt.xlabel('Education Level', fontsize=12)
+plt.xticks(rotation=0)
+plt.grid(True, alpha=0.3)
+# Format y-axis to show values in thousands
+plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${{x/1000:.0f}}K'))
+plt.tight_layout()
+plt.show()
+```    
 
-    plt.title('Average Satisfaction Score by Department', fontsize=16, fontweight='bold')
-    plt.ylabel('Average Satisfaction Score', fontsize=12)
-    plt.xlabel('Department', fontsize=12)
+---Bar Chart Code Example---
+```
+import pandas as pd
+import matplotlib.pyplot as plt
+plt.figure(figsize=(12, 8))
+avg_satisfaction = df.groupby('department')['satisfaction_score'].mean().sort_values(ascending=False)
+bars = plt.bar(avg_satisfaction.index, avg_satisfaction.values, 
+            color=['#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'],
+            alpha=0.8, edgecolor='black', linewidth=1)
+
+plt.title('Average Satisfaction Score by Department', fontsize=16, fontweight='bold')
+plt.ylabel('Average Satisfaction Score', fontsize=12)
+plt.xlabel('Department', fontsize=12)
+plt.xticks(rotation=45)
+plt.grid(True, alpha=0.3, axis='y')
+
+# Add value labels on bars
+for bar in bars:
+    height = bar.get_height()
+    plt.text(bar.get_x() + bar.get_width()/2., height + 0.05,
+            f'{{height:.2f}}', ha='center', va='bottom', fontweight='bold')
+
+# Set y-axis limits for better visualization
+plt.ylim(0, max(avg_satisfaction.values) * 1.1)
+plt.tight_layout()
+plt.show()
+```
+
+---Line Chart Code Example---
+```---Line Chart Code Example (including Time Series)---
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+
+fig, ax = plt.subplots(figsize=(12, 8), facecolor='#F0F0F6')
+
+# For time series data, convert dates first
+if 'OrderDate' in df.columns or any('date' in col.lower() for col in df.columns):
+    date_col = [col for col in df.columns if 'date' in col.lower()]
+    df[date_col] = pd.to_datetime(df[date_col])
+    ax.plot(df[date_col], df.iloc[:, 1], marker='o', linewidth=3, markersize=8)
     plt.xticks(rotation=45)
-    plt.grid(True, alpha=0.3, axis='y')
-
-    # Add value labels on bars
-    for bar in bars:
-        height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2., height + 0.05,
-                f'{{height:.2f}}', ha='center', va='bottom', fontweight='bold')
-
-    # Set y-axis limits for better visualization
-    plt.ylim(0, max(avg_satisfaction.values) * 1.1)
-    plt.tight_layout()
-    plt.show()
-    ```
-
-    ---Line Chart Code Example---
-    ```
----Line Chart Code Example (including Time Series)---
-    import pandas as pd
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    fig, ax = plt.subplots(figsize=(12, 8), facecolor='#F0F0F6')
-
-    # For time series data, convert dates first
-    if 'OrderDate' in df.columns or any('date' in col.lower() for col in df.columns):
-        date_col = [col for col in df.columns if 'date' in col.lower()][0]
-        df[date_col] = pd.to_datetime(df[date_col])
-        ax.plot(df[date_col], df.iloc[:, 1], marker='o', linewidth=3, markersize=8)
-        plt.xticks(rotation=45)
-    else:
-        # For non-time series data
-        yearly_income = df.groupby('year')['income'].mean().sort_index()
-        ax.plot(yearly_income.index, yearly_income.values, marker='o', linewidth=3, markersize=8)
-
-    ax.set_title('Title Here', fontsize=16, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    ```
-
-    --Histogram Code Example---
-    ```
-    import pandas as pd
-    import matplotlib.pyplot as plt
-
-    plt.figure(figsize=(12, 8))
+else:
+    # For non-time series data
     yearly_income = df.groupby('year')['income'].mean().sort_index()
+    ax.plot(yearly_income.index, yearly_income.values, marker='o', linewidth=3, markersize=8)
 
-    # Create histogram with years as x-axis and income values as heights
-    bars = plt.bar(yearly_income.index, yearly_income.values, 
-                color='skyblue', edgecolor='black', alpha=0.7, width=0.8)
+ax.set_title('Title Here', fontsize=16, fontweight='bold')
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+```
 
-    # Color gradient for bars
-    for i, bar in enumerate(bars):
-        bar.set_facecolor(plt.cm.viridis(i / len(bars)))
+--Histogram Code Example---
+```
+import pandas as pd
+import matplotlib.pyplot as plt
 
-    plt.title('Average Income by Year', fontsize=16, fontweight='bold')
-    plt.xlabel('Year', fontsize=12)
-    plt.ylabel('Average Income ($)', fontsize=12)
-    plt.grid(True, alpha=0.3)
+plt.figure(figsize=(12, 8))
+yearly_income = df.groupby('year')['income'].mean().sort_index()
 
-    # Format y-axis to show values in thousands
-    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${{x/1000:.0f}}K'))
+# Create histogram with years as x-axis and income values as heights
+bars = plt.bar(yearly_income.index, yearly_income.values, 
+            color='skyblue', edgecolor='black', alpha=0.7, width=0.8)
 
-    # Add statistics text box
-    mean_income = yearly_income.mean()
-    std_income = yearly_income.std()
-    textstr = f'Mean: ${{mean_income/1000:.1f}}K\nStd: ${{std_income/1000:.1f}}K\nCount: {{len(yearly_income)}}'
-    props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
-    plt.text(0.75, 0.95, textstr, transform=plt.gca().transAxes, fontsize=10,
-            verticalalignment='top', bbox=props)
+# Color gradient for bars
+for i, bar in enumerate(bars):
+    bar.set_facecolor(plt.cm.viridis(i / len(bars)))
 
-    plt.tight_layout()
-    plt.show()
-    ```
+plt.title('Average Income by Year', fontsize=16, fontweight='bold')
+plt.xlabel('Year', fontsize=12)
+plt.ylabel('Average Income ($)', fontsize=12)
+plt.grid(True, alpha=0.3)
 
+# Format y-axis to show values in thousands
+plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${{x/1000:.0f}}K'))
 
+# Add statistics text box
+mean_income = yearly_income.mean()
+std_income = yearly_income.std()
+textstr = f'Mean: ${{mean_income/1000:.1f}}K\nStd: ${{std_income/1000:.1f}}K\nCount: {{len(yearly_income)}}'
+props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
+plt.text(0.75, 0.95, textstr, transform=plt.gca().transAxes, fontsize=10,
+        verticalalignment='top', bbox=props)
+
+plt.tight_layout()
+plt.show()
+```
 Your goal is to generate the Python code to create the best visualization for the user's question: "{user_question}"
 """
-        )
-
+)
         try:
             formatted_prompt = chart_prompt.format(
                 user_question=user_question,
@@ -2072,13 +3219,14 @@ Your goal is to generate the Python code to create the best visualization for th
         logger.info(f"Handling SQL execution error with witty response")
 
         # Handle the specific "no context" error first
-        if error_message == "No previous query context available. Please provide a specific query first.":
-            state["final_response"] = error_message
-            state["follow_up_questions"] = [
-                "What sales data would you like to explore?",
-                "Can I help you with product performance metrics?",
-                "Would you like to see customer analytics?"
-            ]
+        if "no previous query context available" in error_message:
+            base_response = "It looks like you're asking a follow-up, but I don't have the context of a previous query. Could you please state your full question?"
+            state["final_response"] = self._rephrase_message_with_llm(
+    base_response,
+    user_query=state.get("user_question", ""),
+    message_type="ERROR"
+)
+            state["follow_up_questions"] = []
             return state
 
 
@@ -2094,7 +3242,8 @@ Your goal is to generate the Python code to create the best visualization for th
         else:
             error_type = "general_error"
         
-        state["final_response"] = self.response_manager.get_error_message(error_type)
+        base_response = self.response_manager.get_error_message(error_type)
+        state["final_response"] = self._rephrase_message_with_llm(base_response)
         state["follow_up_questions"] = []
         return state
 
@@ -2103,25 +3252,34 @@ Your goal is to generate the Python code to create the best visualization for th
         logger.info(f"Processing user query: {user_question[:100]}...")
 
         initial_state = AgentState(
-            messages=[HumanMessage(content=user_question)],
-            user_question=user_question,
-            corrected_question="",
-            sql_query="",
-            query_result=pd.DataFrame(),
-            final_response="",
-            chart_code="",
-            follow_up_questions=[],
-            session_id=session_id or str(uuid.uuid4()),
-            error_message="",
-            conversation_context=self.conversation_context,
-            previous_queries=self.query_history[-3:] if self.query_history else [],
-            is_valid_query=True,
-            needs_clarification=False,
-            clarification_prompt="",
-            best_chart_type="",
-            visualization_suggestion=""
-        )
-
+        messages=[HumanMessage(content=user_question)],
+        user_question=user_question,
+        corrected_question="",
+        sql_query="",
+        query_result=pd.DataFrame(),
+        final_response="",
+        chart_code="",
+        follow_up_questions=[],
+        session_id=session_id or str(uuid.uuid4()),
+        error_message="",
+        conversation_context=self.conversation_context,
+        previous_queries=self.query_history[-3:] if self.query_history else [],
+        
+        # NEW: Intent fields
+        primary_intent="",
+        contains_greeting=False,
+        contains_data_request=False,
+        intent_reasoning="",
+        
+        # Legacy fields (kept for compatibility)
+        is_valid_query=True,
+        is_greeting=False,
+        needs_clarification=False,
+        clarification_prompt="",
+        best_chart_type="",
+        user_intent="",
+        visualization_suggestion=""
+    )
         # Add thread_id to the state if available
         if thread_id:
             initial_state["thread_id"] = thread_id
@@ -2149,6 +3307,8 @@ Your goal is to generate the Python code to create the best visualization for th
 
         except Exception as e:
             logger.error(f"Error in workflow: {e}")
+            base_response = "I apologize, but I encountered an unexpected error. Please try again or rephrase your question."
+            final_response = self._rephrase_message_with_llm(base_response)
             return {
                 'success': False,
                 'user_input': user_question,
@@ -2156,14 +3316,13 @@ Your goal is to generate the Python code to create the best visualization for th
                 'dataframe': pd.DataFrame(),
                 'chart_code': "",
                 'follow_up_questions': [],
-                'response': "I apologize, but I encountered an unexpected error. Please try again or rephrase your question.",
+                'response': final_response,
                 'results_count': 0,
                 'session_id': session_id or str(uuid.uuid4()),
                 'thread_id': thread_id,
                 'best_chart_type': "",
                 'visualization_suggestion': ""
             }
-
 
 class SessionManager:
     """Enhanced session management for multi-user chat history with thread safety."""
@@ -3184,6 +4343,14 @@ def init_session_state():
     if 'loaded_sessions_cache' not in st.session_state:
         st.session_state.loaded_sessions_cache = {}
 
+    if 'agent' not in st.session_state:
+        st.session_state.agent = init_agent()
+        
+        # Restore pending clarification if it exists
+        if 'pending_clarification' in st.session_state:
+            st.session_state.agent.pending_clarification = st.session_state['pending_clarification']
+            logger.info("Restored pending clarification from session state")
+
 def display_header():
     """Display header without logo."""
     st.markdown("""
@@ -3202,12 +4369,14 @@ def display_header():
 
 def display_welcome_message():
     """Display welcome message for new sessions."""
-    welcome_msg = st.session_state.agent.response_manager.get_welcome_message()
+    agent = st.session_state.agent
+    base_welcome_msg = agent.response_manager.get_welcome_message()
+    dynamic_welcome_msg = agent._rephrase_message_with_llm(base_welcome_msg)
     
     st.markdown(f"""
     <div class="welcome-message">
         <div class="welcome-text">
-            {welcome_msg}
+            {dynamic_welcome_msg}
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -3367,8 +4536,33 @@ def parse_dataframe_from_string(raw_dataframe: str) -> pd.DataFrame:
     logger.warning(f"All DataFrame parsing methods failed for: {cleaned[:100]}...")
     return pd.DataFrame()
 
+def format_markdown_text(text: str) -> str:
+    """
+    Convert markdown-style formatting to HTML.
+    Handles **bold**, __underline__, and other formatting.
+    """
+    import re
+    
+    # Remove smart quotes
+    text = text.replace('"', '').replace('"', '').replace('"', '')
+    
+    # Convert **bold** to <strong>bold</strong>
+    # Use regex to handle multiple occurrences
+    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+    
+    # Convert __underline__ to <u>underline</u>
+    text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
+    
+    # Convert *italic* to <em>italic</em>
+    text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
+    
+    # Convert line breaks
+    text = text.replace('\n', '<br>')
+    
+    return text
+
 def display_chat_message(message_data, is_user=True, message_index=0):
-    """Display chat message with professional styling."""
+    """Display chat message with professional styling and streaming for bot responses."""
     if is_user:
         st.markdown(f"""
         <div class="user-message">
@@ -3380,39 +4574,82 @@ def display_chat_message(message_data, is_user=True, message_index=0):
         # Get response text
         response_text = message_data.get('response', message_data.get('content', ''))
         
-        # Display bot response inside the styled box
-        formatted_response = response_text.replace('**', '<strong>').replace('**', '</strong>').replace('\n', '<br>')
-        # Display bot response inside the styled box
-        st.markdown(f"""
-        <div class="bot-message">
-            <div class="bot-label"> DataBot</div>
-            <div style="margin-top: 10px; line-height: 1.6;">
-                {formatted_response}
+        # Create a placeholder for the bot message
+        message_placeholder = st.empty()
+        
+        # Check if this is the most recent message (should stream) or historical (display instantly)
+        is_latest_message = message_index == len(st.session_state.chat_history) - 1
+        
+        if is_latest_message and 'streamed' not in message_data:
+            # Stream the response for new messages
+            streamed_text = ""
+            
+            # Display the message box structure first
+            for char in stream_response(response_text, delay=0.02):
+                streamed_text += char
+                
+                # Format the text with proper markdown conversion
+                formatted_text = format_markdown_text(streamed_text)
+                
+                message_placeholder.markdown(f"""
+                <div class="bot-message">
+                    <div class="bot-label">DataBot</div>
+                    <div style="margin-top: 10px; line-height: 1.6;">
+                        {formatted_text}<span style="opacity: 0.5;">▌</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Final render without cursor
+            formatted_final = format_markdown_text(response_text)
+            
+            message_placeholder.markdown(f"""
+            <div class="bot-message">
+                <div class="bot-label">DataBot</div>
+                <div style="margin-top: 10px; line-height: 1.6;">
+                    {formatted_final}
+                </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
+            
+            # Mark message as streamed
+            message_data['streamed'] = True
+            
+        else:
+            # Display instantly for historical messages
+            formatted_text = format_markdown_text(response_text)
+            
+            st.markdown(f"""
+            <div class="bot-message">
+                <div class="bot-label">DataBot</div>
+                <div style="margin-top: 10px; line-height: 1.6;">
+                    {formatted_text}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
-        # # Show SQL query
-        # if message_data.get('sql_query') and message_data.get('sql_query') not in ["Error occurred", "Error in SQL generation", ""]:
-        #     with st.expander("🔍 Generated T-SQL Query", expanded=False):
-        #         st.code(message_data.get('sql_query'), language='sql')
+        # Rest of the function remains the same...
+         # Show SQL query (unchanged)
+        if message_data.get('sql_query') and message_data.get('sql_query') not in ["Error occurred", "Error in SQL generation", ""]:
+            with st.expander("Generated T-SQL Query", expanded=False):
+                st.code(message_data.get('sql_query'), language='sql')
 
+        # Rest of the function remains the same...
+        # (DataFrame display, chart display, etc.)
+        
         # Initialize dataframe variable
-        dataframe = pd.DataFrame()  # Start with empty DataFrame
+        dataframe = pd.DataFrame()  
         
         # Safely get and validate dataframe
         raw_dataframe = message_data.get('dataframe')
         
         if raw_dataframe is not None:
             if isinstance(raw_dataframe, pd.DataFrame):
-                # It's already a DataFrame
                 dataframe = raw_dataframe
                 logger.debug(f"Using existing DataFrame with {len(dataframe)} rows")
             elif isinstance(raw_dataframe, str) and raw_dataframe.strip():
-                # It's a non-empty string, try multiple parsing approaches
                 dataframe = parse_dataframe_from_string(raw_dataframe)
             elif isinstance(raw_dataframe, (list, dict)):
-                # It's already parsed JSON data
                 try:
                     dataframe = pd.DataFrame(raw_dataframe)
                     logger.debug(f"Successfully converted parsed data to DataFrame with {len(dataframe)} rows")
@@ -3422,7 +4659,6 @@ def display_chat_message(message_data, is_user=True, message_index=0):
 
         # Display results table only if we have data
         if not dataframe.empty:
-            # Show data with pagination for large results
             if len(dataframe) > 20:
                 st.dataframe(dataframe.head(20), use_container_width=True, hide_index=True)
                 st.caption(f"Showing first 20 rows of {len(dataframe)} total results")
@@ -3442,10 +4678,9 @@ def display_chat_message(message_data, is_user=True, message_index=0):
         # Display generated chart
         chart_code = message_data.get('chart_code')
         if chart_code and chart_code.strip() and not chart_code.startswith("#"):
-            with st.expander("📊 Generated Chart", expanded=True):
+            with st.expander(" Generated Chart", expanded=True):
                 try:
                     if not dataframe.empty:
-                        # Prepare the execution scope with figure size settings
                         plt.rcParams['figure.figsize'] = [3.6, 3.5]
                         plt.rcParams['figure.dpi'] = 100
                         exec_scope = {
@@ -3454,10 +4689,8 @@ def display_chat_message(message_data, is_user=True, message_index=0):
                             'plt': plt,
                             'np': np
                         }
-                        # Execute the generated code
                         exec(chart_code, exec_scope)
                         
-                        # Retrieve and style the figure object
                         fig = exec_scope.get('fig')
                         
                         if fig:
@@ -3564,6 +4797,8 @@ def process_user_input(user_input):
         st.session_state.agent.conversation_context,
         st.session_state.agent.query_history
     )
+    
+    st.rerun()
 
 def sidebar_interface():
     """Sidebar with session management and logo with user isolation."""
@@ -3589,7 +4824,7 @@ def sidebar_interface():
         # New chat button
         col1, col2 = st.columns([2, 1])
         with col1:
-            if st.button("➕ New Chat", width='stretch'):
+            if st.button("New Chat", width='stretch'):
                 logger.info(f"User {st.session_state.user_id} action: Started new chat session")
                 thread_id = str(uuid.uuid4())
                 new_session_id = st.session_state.session_manager.create_session(
@@ -3762,7 +4997,7 @@ def main_chat_interface():
         # Clear follow-up questions when new input is entered
         st.session_state.current_followup_questions = []
         process_user_input(user_input)
-        st.rerun()
+        
 
 def main():
     """Main application entry point."""
