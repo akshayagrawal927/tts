@@ -112,7 +112,7 @@ def stream_response(text: str, delay: float = 0.03):
         time.sleep(delay)
 
 class WittyResponseManager:
-    """Manages intelligent, non-repetitive witty responses for DataBot"""
+    """Manages intelligent, non-repetitive witty responses for Pulse AI"""
     
     def __init__(self):
         self.used_responses = {
@@ -126,13 +126,13 @@ class WittyResponseManager:
         
         # Welcome messages pool
         self.welcome_messages = [
-            "Welcome aboard Pulse AI! I'm DataBot—your caffeine-free but hyper-curious analytics sidekick. Ask me anything from 'Show last quarter's sales trends' to 'What's our top-selling product?' and I'll happily dig through your data for nuggets of truth, whip up charts, and even spot time-based trends before your coffee cools.",
+            "Welcome aboard Pulse AI! I'm Pulse AI—your caffeine-free but hyper-curious analytics sidekick. Ask me anything from 'Show last quarter's sales trends' to 'What's our top-selling product?' and I'll happily dig through your data for nuggets of truth, whip up charts, and even spot time-based trends before your coffee cools.",
             
-            "Hey there! I'm DataBot, your friendly neighborhood data detective. Think of me as Sherlock Holmes but for spreadsheets—minus the pipe, plus the SQL queries. Ready to solve some data mysteries together?",
+            "Hey there! I'm Pulse AI, your friendly neighborhood data detective. Think of me as Sherlock Holmes but for spreadsheets—minus the pipe, plus the SQL queries. Ready to solve some data mysteries together?",
             
-            "Welcome to the data playground! I'm DataBot, and I speak fluent SQL, chart-ese, and insight-ish. Point me toward your questions and I'll turn your data into a treasure chest of answers.",
+            "Welcome to the data playground! I'm Pulse AI, and I speak fluent SQL, chart-ese, and insight-ish. Point me toward your questions and I'll turn your data into a treasure chest of answers.",
             
-            "Greetings, data explorer! DataBot here—part analyst, part magician, all algorithms. I transform your curiosity into charts, your questions into insights, and your confusion into clarity. What shall we discover first?",
+            "Greetings, data explorer! Pulse AI here—part analyst, part magician, all algorithms. I transform your curiosity into charts, your questions into insights, and your confusion into clarity. What shall we discover first?",
 
             "Hello Leader! You're now plugged into Pulse AI—where questions meet instant intelligence. Consider me your strategy co-pilot."
         ]
@@ -273,7 +273,7 @@ class WittyResponseManager:
         self.processing_messages = [
             "Running the numbers… insights en route",
             "Query in motion—your data story is loading.",
-            "Crunching numbers, wrangling rows... give me a second to work my DataBot magic.",
+            "Crunching numbers, wrangling rows... give me a second to work my Pulse AI magic.",
             "Diving deep into the data ocean—surfacing with insights in 3, 2, 1...",
             "SQL spells are brewing! Your data insights are cooking up nicely...",
             "Processing at warp speed—transforming your question into data gold...",
@@ -284,17 +284,17 @@ class WittyResponseManager:
         self.greeting_responses = [
             "Hello Leader! You're now plugged into Pulse AI—where questions meet instant intelligence. Consider me your strategy co-pilot."
 
-            "Hi! I'm DataBot, your friendly data assistant. I specialize in analyzing your data and turning your questions into insights. What would you like to explore today?",
+            "Hi! I'm Pulse AI, your friendly data assistant. I specialize in analyzing your data and turning your questions into insights. What would you like to explore today?",
             
-            "Hello there! DataBot here - ready to dive into your data and uncover some interesting insights. Ask me anything about your sales, customers, products, or any other data you'd like to analyze!",
+            "Hello there! Pulse AI here - ready to dive into your data and uncover some interesting insights. Ask me anything about your sales, customers, products, or any other data you'd like to analyze!",
             
-            "Good to meet you! I'm DataBot, your AI-powered analytics companion. I can help you query your database, generate charts, and discover valuable business insights. What data mystery shall we solve together?",
+            "Good to meet you! I'm Pulse AI, your AI-powered analytics companion. I can help you query your database, generate charts, and discover valuable business insights. What data mystery shall we solve together?",
             
-            "Hi! I'm DataBot - think of me as your personal data detective. I love turning complex queries into simple answers and transforming raw data into actionable insights. How can I help you today?",
+            "Hi! I'm Pulse AI - think of me as your personal data detective. I love turning complex queries into simple answers and transforming raw data into actionable insights. How can I help you today?",
             
-            "Greetings! DataBot at your service. I'm here to make your data sing and your insights shine. Whether you need sales reports, customer analytics, or trend analysis - I've got you covered!",
+            "Greetings! Pulse AI at your service. I'm here to make your data sing and your insights shine. Whether you need sales reports, customer analytics, or trend analysis - I've got you covered!",
             
-            "Hello! I'm DataBot, your caffeinated (well, algorithmically speaking) data companion. Ready to transform your curiosity into clear, actionable insights from your data. What shall we discover first?"
+            "Hello! I'm Pulse AI, your caffeinated (well, algorithmically speaking) data companion. Ready to transform your curiosity into clear, actionable insights from your data. What shall we discover first?"
         ]
     
     def get_greeting_response(self) -> str:
@@ -398,9 +398,9 @@ class WittyResponseManager:
         # Add occasional personality touches
         if self.response_count % 5 == 0:
             touches = [
-                "\n\n*DataBot tip: I get more caffeinated with each query—keep 'em coming!*",
+                "\n\n*Pulse AI tip: I get more caffeinated with each query—keep 'em coming!*",
                 "\n\n*Pro tip: The more specific your questions, the more impressive my answers become!*",
-                "\n\n*DataBot wisdom: Every great insight starts with a curious question!*"
+                "\n\n*Pulse AI wisdom: Every great insight starts with a curious question!*"
             ]
             base_response += random.choice(touches)
         
@@ -461,7 +461,7 @@ Generated SQL: SELECT OrderSource, COUNT(*) as OrderCount FROM dbo.sales_data WH
 
 # Improved Guardrails configuration
 GUARDRAILS_PROMPT = """
-You are DataBot, a specialized SQL analytics assistant for Azure Synapse. You help with:
+You are Pulse AI, a specialized SQL analytics assistant for Azure Synapse. You help with:
 1. Database queries and data analysis
 2. SQL-related questions about the available data
 3. Data retrieval and reporting
@@ -488,7 +488,7 @@ You must DECLINE (politely) any requests about:
 - Topics completely unrelated to querying the database
 
 Note: Queries asking for "today's date" or "current date" are VALID database queries that should use GETDATE().
-Note: For greetings, respond warmly and introduce yourself as DataBot, then offer to help with data analysis.
+Note: For greetings, respond warmly and introduce yourself as Pulse AI, then offer to help with data analysis.
 """
 
 # Mapping schema prompt for business context
@@ -882,7 +882,7 @@ class ContextAwareSynapseAgent:
             return ""
 
         rephrase_prompt = ChatPromptTemplate.from_template("""
-    You are a professional communication specialist for DataBot, an AI data analytics assistant.
+    You are a professional communication specialist for Pulse AI, an AI data analytics assistant.
 
     **CONTEXT:**
     - Message Type: {message_type}
@@ -900,7 +900,7 @@ class ContextAwareSynapseAgent:
     **RESPONSE GUIDELINES BY TYPE:**
 
     **GREETING_ONLY:**
-    - Welcome warmly and briefly introduce DataBot's capabilities
+    - Welcome warmly and briefly introduce Pulse AI's capabilities
     - Reference any greeting in their query naturally
     - Offer specific examples of what you can help with
     -Example : 👋 Hello Leader! You're now plugged into Pulse AI—where questions meet instant intelligence. Consider me your strategy co-pilot.”
@@ -4395,7 +4395,7 @@ def display_header():
             </div>
         </div>
         <div class="bot-name">
-             Assistant: DataBot
+             Assistant: Pulse AI
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -4626,7 +4626,7 @@ def display_chat_message(message_data, is_user=True, message_index=0):
                 
                 message_placeholder.markdown(f"""
                 <div class="bot-message">
-                    <div class="bot-label">DataBot</div>
+                    <div class="bot-label">Pulse AI</div>
                     <div style="margin-top: 10px; line-height: 1.6;">
                         {formatted_text}<span style="opacity: 0.5;">▌</span>
                     </div>
@@ -4638,7 +4638,7 @@ def display_chat_message(message_data, is_user=True, message_index=0):
             
             message_placeholder.markdown(f"""
             <div class="bot-message">
-                <div class="bot-label">DataBot</div>
+                <div class="bot-label">Pulse AI</div>
                 <div style="margin-top: 10px; line-height: 1.6;">
                     {formatted_final}
                 </div>
@@ -4654,7 +4654,7 @@ def display_chat_message(message_data, is_user=True, message_index=0):
             
             st.markdown(f"""
             <div class="bot-message">
-                <div class="bot-label">DataBot</div>
+                <div class="bot-label">Pulse AI</div>
                 <div style="margin-top: 10px; line-height: 1.6;">
                     {formatted_text}
                 </div>
@@ -5024,7 +5024,7 @@ def main_chat_interface():
     # Input area
     st.markdown("---")
 
-    user_input = st.chat_input("💬 Ask DataBot about your data...", key="main_input")
+    user_input = st.chat_input("💬 Ask Pulse AI about your data...", key="main_input")
 
     if user_input:
         # Clear follow-up questions when new input is entered
