@@ -1,5 +1,5 @@
 """
-DataChat AI - Professional Text-to-SQL Assistant with Smart Charting and Fuzzy Search
+Pulse AI - Professional Text-to-SQL Assistant with Smart Charting and Fuzzy Search
 Intelligent Data Analytics Platform
 """
 from io import StringIO
@@ -94,7 +94,7 @@ SYNAPSE_CONFIG = {
 
 # Page configuration
 st.set_page_config(
-    page_title="DataChat AI ",
+    page_title="Pulse AI ",
     page_icon="",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -126,7 +126,7 @@ class WittyResponseManager:
         
         # Welcome messages pool
         self.welcome_messages = [
-            "Welcome aboard DataChat AI! I'm DataBot—your caffeine-free but hyper-curious analytics sidekick. Ask me anything from 'Show last quarter's sales trends' to 'What's our top-selling product?' and I'll happily dig through your data for nuggets of truth, whip up charts, and even spot time-based trends before your coffee cools.",
+            "Welcome aboard Pulse AI! I'm DataBot—your caffeine-free but hyper-curious analytics sidekick. Ask me anything from 'Show last quarter's sales trends' to 'What's our top-selling product?' and I'll happily dig through your data for nuggets of truth, whip up charts, and even spot time-based trends before your coffee cools.",
             
             "Hey there! I'm DataBot, your friendly neighborhood data detective. Think of me as Sherlock Holmes but for spreadsheets—minus the pipe, plus the SQL queries. Ready to solve some data mysteries together?",
             
@@ -134,7 +134,7 @@ class WittyResponseManager:
             
             "Greetings, data explorer! DataBot here—part analyst, part magician, all algorithms. I transform your curiosity into charts, your questions into insights, and your confusion into clarity. What shall we discover first?",
 
-            "Hello Leader! You're now plugged into Datachat AI—where questions meet instant intelligence. Consider me your strategy co-pilot."
+            "Hello Leader! You're now plugged into Pulse AI—where questions meet instant intelligence. Consider me your strategy co-pilot."
         ]
         
         # Success response templates based on result count
@@ -282,7 +282,7 @@ class WittyResponseManager:
         ]
 
         self.greeting_responses = [
-            "Hello Leader! You're now plugged into Datachat AI—where questions meet instant intelligence. Consider me your strategy co-pilot."
+            "Hello Leader! You're now plugged into Pulse AI—where questions meet instant intelligence. Consider me your strategy co-pilot."
 
             "Hi! I'm DataBot, your friendly data assistant. I specialize in analyzing your data and turning your questions into insights. What would you like to explore today?",
             
@@ -4333,11 +4333,11 @@ def get_user_id():
 def init_agent():
     """Initialize agent with caching to prevent reloading."""
     try:
-        logger.info("Initializing DataChat AI agent")
+        logger.info("Initializing Pulse AI agent")
         return ContextAwareSynapseAgent(AZURE_OPENAI_CONFIG)
     except Exception as e:
-        logger.error(f"Failed to initialize DataChat AI: {e}")
-        st.error(f"Failed to initialize DataChat AI: {e}")
+        logger.error(f"Failed to initialize Pulse AI: {e}")
+        st.error(f"Failed to initialize Pulse AI: {e}")
         st.stop()
 
 def init_session_state():
@@ -4390,7 +4390,7 @@ def display_header():
     <div class="app-header">
         <div class="header-content">
             <div class="app-title">
-                <h1>DataChat AI</h1>
+                <h1>Pulse AI</h1>
                 <p>Data Analytics Assistant</p>
             </div>
         </div>
@@ -5035,7 +5035,7 @@ def main_chat_interface():
 def main():
     """Main application entry point."""
     try:
-        logger.info("Starting DataChat AI application")
+        logger.info("Starting Pulse AI application")
 
         # Load CSS
         load_professional_css()
@@ -5053,11 +5053,11 @@ def main():
         # st.markdown("---")
         # st.markdown("""
         # <div style="text-align: center; color: #666; font-size: 0.85rem;">
-        #     <p>Powered by YASH Technologies | DataChat AI v2.1 | Enterprise Analytics Solution</p>
+        #     <p>Powered by YASH Technologies | Pulse AI v2.1 | Enterprise Analytics Solution</p>
         # </div>
         # """, unsafe_allow_html=True)
 
-        logger.info("DataChat AI application loaded successfully")
+        logger.info("Pulse AI application loaded successfully")
 
     except Exception as e:
         logger.error(f"Main application error: {e}", exc_info=True)
@@ -5066,4 +5066,5 @@ def main():
 
 if __name__ == "__main__":
     # Run the application
+
     main()
