@@ -4711,36 +4711,97 @@ def display_chat_message(message_data, is_user=True, message_index=0):
         # Display generated chart
         chart_code = message_data.get('chart_code')
         if chart_code and chart_code.strip() and not chart_code.startswith("#"):
-            with st.expander(" Generated Chart", expanded=True):
-                try:
-                    if not dataframe.empty:
-                        plt.rcParams['figure.figsize'] = [3.6, 3.5]
-                        plt.rcParams['figure.dpi'] = 100
-                        exec_scope = {
-                            'df': dataframe,
-                            'pd': pd,
-                            'plt': plt,
-                            'np': np
-                        }
-                        exec(chart_code, exec_scope)
+            # with st.expander(" Generated Chart", expanded=True):
+            #     try:
+            #         if not dataframe.empty:
+            #             plt.rcParams['figure.figsize'] = [3.6, 3.5]
+            #             plt.rcParams['figure.dpi'] = 100
+            #             exec_scope = {
+            #                 'df': dataframe,
+            #                 'pd': pd,
+            #                 'plt': plt,
+            #                 'np': np
+            #             }
+            #             exec(chart_code, exec_scope)
                         
-                        fig = exec_scope.get('fig')
+            #             fig = exec_scope.get('fig')
                         
-                        if fig:
-                            fig.tight_layout(pad=1.2)
-                            col1, col2, col3 = st.columns([2, 8, 2])
-                            with col2:
-                                st.pyplot(fig, use_container_width=True)
-                        else:
-                            st.warning("Chart code was executed but did not produce a 'fig' object to display.")
-                            st.code(chart_code, language='python')
-                    else:
-                        st.warning("No data available for chart generation.")
-                except Exception as e:
-                    st.error(f"An error occurred while displaying the chart: {e}")
-                    st.code(chart_code, language='python')
+            #             if fig:
+            #                 fig.tight_layout(pad=1.2)
+            #                 col1, col2, col3 = st.columns([2, 8, 2])
+            #                 with col2:
+            #                     st.pyplot(fig, use_container_width=True)
+            #             else:
+            #                 st.warning("Chart code was executed but did not produce a 'fig' object to display.")
+            #                 st.code(chart_code, language='python')
+            #         else:
+            #             st.warning("No data available for chart generation.")
+            #     except Exception as e:
+            #         st.error(f"An error occurred while displaying the chart: {e}")
+            #         st.code(chart_code, language='python')
+            with st.expander("📊 Generated Chart", expanded=True):
 
-        # Display follow-up questions for the latest message
+                try:
+
+                    if not dataframe.empty:
+
+                        # More explicit figure sizing
+
+                        plt.rcParams['figure.figsize'] = [10, 8]
+
+                        plt.rcParams['figure.dpi'] = 100
+
+                        exec_scope = {
+
+                            'df': dataframe,
+
+                            'pd': pd,
+
+                            'plt': plt,
+
+                            'np': np
+
+                        }
+
+                        exec(chart_code, exec_scope)
+
+                        fig = exec_scope.get('fig')
+
+                        if fig:
+
+                            # Explicitly set figure size again
+
+                            fig.set_size_inches(10, 8)
+
+                            fig.tight_layout(pad=1.2)
+
+                            col1, col2, col3 = st.columns([2, 8, 2])
+
+                            with col2:
+
+                                st.pyplot(fig, clear_figure=True)
+
+                            # Clean up
+
+                            plt.close(fig)
+
+                        else:
+
+                            st.warning("Chart code was executed but did not produce a 'fig' object to display.")
+
+                            st.code(chart_code, language='python')
+
+                    else:
+
+                        st.warning("No data available for chart generation.")
+
+                except Exception as e:
+
+                    st.error(f"An error occurred while displaying the chart: {e}")
+
+                    st.code(chart_code, language='python')
+            
+                    # Display follow-up questions for the latest message
         if message_index == len(st.session_state.chat_history) - 1:
             follow_up_questions = message_data.get('follow_up_questions', [])
             if follow_up_questions:
