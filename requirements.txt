@@ -1,6 +1,7 @@
 accelerate
 aiohappyeyeballs
 aiohttp
+asyncio
 aiosignal
 altair
 annotated-types
@@ -212,3 +213,4 @@ xxhash
 yarl
 zipp
 zstandard
+
