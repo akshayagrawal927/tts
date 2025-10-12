@@ -150,7 +150,6 @@ python-decouple
 python-dotenv
 python-multipart
 pytz
-pywin32
 pyyaml
 pyzmq
 rapidfuzz
@@ -213,4 +212,5 @@ xxhash
 yarl
 zipp
 zstandard
+
 
