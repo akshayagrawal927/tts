@@ -31,16 +31,14 @@ jobs:
         run: |
           source venv/bin/activate
           pip install -r requirements.txt
-      
-      - name: Create deployment package
-        run: |
-          zip -r deploy.zip . -x "venv/*" -x ".git/*" -x ".github/*" -x "*__pycache__/*" -x "*.pyc"
-      
+        
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
         with:
           name: python-app
-          path: deploy.zip
+          path: |
+            .
+            !venv/
 
   deploy:
     runs-on: ubuntu-latest
@@ -52,14 +50,8 @@ jobs:
         with:
           name: python-app
       
-      - name: Unzip deployment package
-        run: |
-          unzip deploy.zip -d deploy_files
-      
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'my-streamlit-app'
-          slot-name: 'Production'
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          package: ./deploy_files
